@@ -48,7 +48,9 @@ struct RuntimeData
     VkSemaphore img_available_semaphore = {};
     VkSemaphore render_finished_semaphore = {};
     VkFence inflight_fence = {};
+    bool framebufferWasResized = false;
     Arena arena = {};
+    Arena swapchain_arena = {};
 };
 
 RuntimeData initVulkan();

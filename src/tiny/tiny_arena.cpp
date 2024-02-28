@@ -16,8 +16,8 @@ Arena arena_init(void* backing_buffer, size_t arena_size) {
 
 Arena arena_init(void* backing_buffer, size_t arena_size, const char* name) {
     Arena a = arena_init(backing_buffer, arena_size);
-    char* name_mem = (char*)arena_alloc(&a, strnlen(name, MAX_ARENA_NAME_LEN)); 
-    strcpy((char*)name, name_mem);
+    char* name_mem = (char*)arena_alloc(&a, MAX_ARENA_NAME_LEN); 
+    strcpy(name_mem, (char*)name);
     return a;
 }
 
@@ -76,6 +76,13 @@ void arena_clear(Arena* arena) {
     arena->offset = 0;
     arena->prev_offset = 0;
 }
+
+void arena_clear_null(Arena* arena) {
+    arena->offset = 0;
+    arena->prev_offset = 0;
+    TMEMSET(arena->backing_mem, 0, arena->backing_mem_size);
+}
+
 
 void arena_free_all(Arena* arena)
 {

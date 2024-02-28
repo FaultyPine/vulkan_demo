@@ -16,12 +16,13 @@ u32 SCREEN_HEIGHT = 600;
 
 GLFWwindow* glob_glfw_window = nullptr;
 
-void framebuffer_resize_callback(GLFWwindow* window, s32 width, s32 height) 
+static void framebuffer_resize_callback(GLFWwindow* window, s32 width, s32 height) 
 {
-    
+    RuntimeData* runtime = (RuntimeData*)glfwGetWindowUserPointer(glob_glfw_window);
+    runtime->framebufferWasResized = true;
 }
 
-void mouse_callback(GLFWwindow* window, f64 xpos, f64 ypos) 
+static void mouse_callback(GLFWwindow* window, f64 xpos, f64 ypos) 
 {
 
 }
@@ -36,8 +37,9 @@ void initWindow()
 {
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API); // need to tell glfw we are not using Opengl
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE); // TODO: to be implemented later
     glob_glfw_window = glfwCreateWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Vulkan", nullptr, nullptr);
+    glfwSetFramebufferSizeCallback(glob_glfw_window, framebuffer_resize_callback);
+    glfwSetCursorPosCallback(glob_glfw_window, mouse_callback);
 }
 
 void mainLoop()
@@ -56,6 +58,7 @@ int main(int argc, char** argv)
     LOG_INFO("CWD: %s", cwd);
     initWindow();
     RuntimeData runtime = initVulkan();
+    glfwSetWindowUserPointer(glob_glfw_window, &runtime);
     while(!should_close_window(glob_glfw_window)) 
     {
         mainLoop();

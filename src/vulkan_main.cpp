@@ -1072,11 +1072,11 @@ void create_sync_objects(
 
 RuntimeData initVulkan()
 {
-    const u32 program_max_mem = MEGABYTES_BYTES(1);
+    const u32 program_max_mem = MEGABYTES_BYTES(2);
     void* program_mem = TSYSALLOC(program_max_mem);
-    Arena arena = arena_init(program_mem, program_max_mem);
     RuntimeData runtime;
-    runtime.arena = arena;
+    runtime.arena = arena_init(program_mem, program_max_mem, "MainArena");
+    Arena& arena = runtime.arena;
     // NOTE: because we set up of the debug messenger after the instance - any bugs/messages in instance creation
     // won't be shown. There is a way around this...
     runtime.instance = createInstance(&arena);
@@ -1087,11 +1087,16 @@ RuntimeData initVulkan()
     QueueFamilyIndices indices = find_queue_families(&arena, runtime.physical_device, runtime.surface);
     vkGetDeviceQueue(runtime.logical_device, indices.graphics_family.value(), 0, &runtime.graphics_queue);
     vkGetDeviceQueue(runtime.logical_device, indices.present_family.value(), 0, &runtime.present_queue);
-    runtime.swapchain_info = create_swapchain(&arena, runtime.logical_device, runtime.physical_device, runtime.surface);
-    runtime.swapchain_image_views = create_swapchain_image_views(&arena, runtime.logical_device, runtime.swapchain_info);
+    
+    constexpr u32 swapchain_arena_size = MEGABYTES_BYTES(1);
+    void* swapchain_arena_mem = arena_alloc(&arena, swapchain_arena_size);
+    runtime.swapchain_arena = arena_init(swapchain_arena_mem, swapchain_arena_size, "SwapchainArena");;
+    runtime.swapchain_info = create_swapchain(&runtime.swapchain_arena, runtime.logical_device, runtime.physical_device, runtime.surface);
+    runtime.swapchain_image_views = create_swapchain_image_views(&runtime.swapchain_arena, runtime.logical_device, runtime.swapchain_info);
     runtime.render_pass = create_render_pass(&arena, runtime.logical_device, runtime.swapchain_info);
     runtime.graphics_pipeline = create_graphics_pipeline(&arena, runtime.logical_device, runtime.swapchain_info, runtime.render_pass, runtime.pipline_layout);
-    runtime.swapchain_framebuffers = create_framebuffers(&arena, runtime.swapchain_image_views, runtime.logical_device, runtime.render_pass, runtime.swapchain_info.extent);
+    runtime.swapchain_framebuffers = create_framebuffers(&runtime.swapchain_arena, runtime.swapchain_image_views, runtime.logical_device, runtime.render_pass, runtime.swapchain_info.extent);
+
     runtime.command_pool = create_command_pool(&arena, indices, runtime.logical_device);
     runtime.command_buffer = create_command_buffer(runtime.logical_device, runtime.command_pool);
     create_sync_objects(runtime.logical_device, runtime.img_available_semaphore, runtime.render_finished_semaphore, runtime.inflight_fence);
@@ -1110,19 +1115,31 @@ void destroy_swapchain(RuntimeData& runtime)
         vkDestroyImageView(runtime.logical_device, runtime.swapchain_image_views.data[i], nullptr);
     }
     vkDestroySwapchainKHR(runtime.logical_device, runtime.swapchain_info.swapchain, nullptr);
+    arena_clear(&runtime.swapchain_arena);
 }
 
 void recreate_swapchain(RuntimeData& runtime)
 {
+    s32 width, height;
+    glfwGetFramebufferSize(glob_glfw_window, &width, &height);
+    while (width == 0 || height == 0)
+    {
+        glfwGetFramebufferSize(glob_glfw_window, &width, &height);
+        glfwWaitEvents();
+    }
+    LOG_INFO("recreating swapchain (%ix%i)", width, height);
+
     vkDeviceWaitIdle(runtime.logical_device);
     destroy_swapchain(runtime);
-    runtime.swapchain_info = create_swapchain(&runtime.arena, runtime.logical_device, runtime.physical_device, runtime.surface);
-    runtime.swapchain_image_views = create_swapchain_image_views(&runtime.arena, runtime.logical_device, runtime.swapchain_info);
-    runtime.swapchain_framebuffers = create_framebuffers(&runtime.arena, runtime.swapchain_image_views, runtime.logical_device, runtime.render_pass, runtime.swapchain_info.extent);
+
+    runtime.swapchain_info = create_swapchain(&runtime.swapchain_arena, runtime.logical_device, runtime.physical_device, runtime.surface);
+    runtime.swapchain_image_views = create_swapchain_image_views(&runtime.swapchain_arena, runtime.logical_device, runtime.swapchain_info);
+    runtime.swapchain_framebuffers = create_framebuffers(&runtime.swapchain_arena, runtime.swapchain_image_views, runtime.logical_device, runtime.render_pass, runtime.swapchain_info.extent);
     // NOTE: not recreating render passes here. In theory swapchain image format may change during an app's lifetime
     // like if you drag the window from a standard monitor to a high DPI monitor. In that case we'd need to recreate the render pass
 }
 
+// draws a frame
 void vulkanMainLoop(RuntimeData& runtime)
 {
     // wait until previous frame is finished drawing
@@ -1144,7 +1161,8 @@ void vulkanMainLoop(RuntimeData& runtime)
     {
         VK_CHECK(result); // VK_SUBOPTIMAL_KHR is considered a success code rn
     }
-    // after waiting, if we know we are going to submit work, reset fence to unsignaled state
+    // after waiting, if we know we are going to submit work (we might not if we need to recreate swapchain)
+    // reset fence to unsignaled state
     vkResetFences(runtime.logical_device, 1, &runtime.inflight_fence);
 
     vkResetCommandBuffer(runtime.command_buffer, 0);
@@ -1179,8 +1197,9 @@ void vulkanMainLoop(RuntimeData& runtime)
     present_info.pResults = nullptr; // Optional
     result = vkQueuePresentKHR(runtime.present_queue, &present_info);
     VK_CHECK(result);
-    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) 
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || runtime.framebufferWasResized) 
     {
+        runtime.framebufferWasResized = false;
         recreate_swapchain(runtime);
     }
 }
