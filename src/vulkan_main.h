@@ -11,13 +11,18 @@
 #include "glfw/glfw3.h"
 #include <GLFW/glfw3native.h>
 
+#include "defines.h"
 #include "tiny/tiny_arena.h"
 
+constexpr u32 MAX_FRAMES_IN_FLIGHT = 2;
+
+// non-owning
 template <typename T>
 struct BufferView
 {
     T* data = nullptr;
     size_t size = 0;
+    inline u32 get_num_elements() { return size / sizeof(T); }
 };
 
 struct SwapchainInfo
@@ -44,13 +49,14 @@ struct RuntimeData
     VkPipeline graphics_pipeline = {};
     BufferView<VkFramebuffer> swapchain_framebuffers = {};
     VkCommandPool command_pool = {};
-    VkCommandBuffer command_buffer = {};
-    VkSemaphore img_available_semaphore = {};
-    VkSemaphore render_finished_semaphore = {};
-    VkFence inflight_fence = {};
+    BufferView<VkCommandBuffer> command_buffers = {};
+    BufferView<VkSemaphore> img_available_semaphores = {};
+    BufferView<VkSemaphore> render_finished_semaphores = {};
+    BufferView<VkFence> inflight_fences = {};
     bool framebufferWasResized = false;
     Arena arena = {};
     Arena swapchain_arena = {};
+    u32 current_frame = 0;
 };
 
 RuntimeData initVulkan();

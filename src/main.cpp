@@ -18,7 +18,7 @@ GLFWwindow* glob_glfw_window = nullptr;
 
 static void framebuffer_resize_callback(GLFWwindow* window, s32 width, s32 height) 
 {
-    RuntimeData* runtime = (RuntimeData*)glfwGetWindowUserPointer(glob_glfw_window);
+    RuntimeData* runtime = reinterpret_cast<RuntimeData*>(glfwGetWindowUserPointer(glob_glfw_window));
     runtime->framebufferWasResized = true;
 }
 

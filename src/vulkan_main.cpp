@@ -14,8 +14,6 @@
 #define CLAMP(x, min, max) (x < min ? min : (x > max ? max : x))
 
 /* BOOKMARK:
-https://vulkan-tutorial.com/en/Drawing_a_triangle/Swap_chain_recreation
-and
 https://vulkan-tutorial.com/Drawing_a_triangle/Drawing/Frames_in_flight
 */ 
 
@@ -981,20 +979,23 @@ VkCommandPool create_command_pool(
     return cmd_pool;
 }
 
-VkCommandBuffer create_command_buffer(
+BufferView<VkCommandBuffer> create_command_buffers(
+    Arena* arena,
     VkDevice logical_device,
     VkCommandPool command_pool)
 {
+    BufferView<VkCommandBuffer> command_buffers = {};
+    command_buffers.data = arena_alloc_type(arena, VkCommandBuffer, MAX_FRAMES_IN_FLIGHT);
+    command_buffers.size = sizeof(VkCommandBuffer) * MAX_FRAMES_IN_FLIGHT;
     VkCommandBufferAllocateInfo alloc_info = {};
     alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     alloc_info.commandPool = command_pool;
     // VK_COMMAND_BUFFER_LEVEL_PRIMARY: Can be submitted to a queue for execution, but cannot be called from other command buffers. | VK_COMMAND_BUFFER_LEVEL_SECONDARY: Cannot be submitted directly, but can be called from primary command buffers
     alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    alloc_info.commandBufferCount = 1;
-    VkCommandBuffer cmd_buffer = {};
-    VkResult result = vkAllocateCommandBuffers(logical_device, &alloc_info, &cmd_buffer);
+    alloc_info.commandBufferCount = MAX_FRAMES_IN_FLIGHT;
+    VkResult result = vkAllocateCommandBuffers(logical_device, &alloc_info, command_buffers.data);
     VK_CHECK(result);
-    return cmd_buffer;
+    return command_buffers;
 }
 
 void record_cmd_buffer(
@@ -1052,22 +1053,33 @@ void record_cmd_buffer(
 }
 
 void create_sync_objects(
+    Arena* arena,
     VkDevice logical_device,
-    VkSemaphore& img_available_semaphore,
-    VkSemaphore& render_finished_semaphore,
-    VkFence& inflight_fence)
+    BufferView<VkSemaphore>& img_available_semaphores,
+    BufferView<VkSemaphore>& render_finished_semaphores,
+    BufferView<VkFence>& inflight_fences)
 {
+    img_available_semaphores.data = arena_alloc_type(arena, VkSemaphore, MAX_FRAMES_IN_FLIGHT);
+    img_available_semaphores.size = sizeof(VkSemaphore) * MAX_FRAMES_IN_FLIGHT;
+    render_finished_semaphores.data = arena_alloc_type(arena, VkSemaphore, MAX_FRAMES_IN_FLIGHT);
+    render_finished_semaphores.size = sizeof(VkSemaphore) * MAX_FRAMES_IN_FLIGHT;
+    inflight_fences.data = arena_alloc_type(arena, VkFence, MAX_FRAMES_IN_FLIGHT);
+    inflight_fences.size = sizeof(VkFence) * MAX_FRAMES_IN_FLIGHT;
+
     VkSemaphoreCreateInfo semaphore_info = {};
     semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     VkFenceCreateInfo fence_info = {};
     fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT; // create the fence in signaled state so the first frame we wait for it doesn't inf stall
-    VkResult result = vkCreateSemaphore(logical_device, &semaphore_info, nullptr, &img_available_semaphore);
-    VK_CHECK(result);
-    result = vkCreateSemaphore(logical_device, &semaphore_info, nullptr, &render_finished_semaphore);
-    VK_CHECK(result);
-    result = vkCreateFence(logical_device, &fence_info, nullptr, &inflight_fence);
-    VK_CHECK(result);
+    for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        VkResult result = vkCreateSemaphore(logical_device, &semaphore_info, nullptr, &img_available_semaphores.data[i]);
+        VK_CHECK(result);
+        result = vkCreateSemaphore(logical_device, &semaphore_info, nullptr, &render_finished_semaphores.data[i]);
+        VK_CHECK(result);
+        result = vkCreateFence(logical_device, &fence_info, nullptr, &inflight_fences.data[i]);
+        VK_CHECK(result);
+    }
 }
 
 RuntimeData initVulkan()
@@ -1098,8 +1110,8 @@ RuntimeData initVulkan()
     runtime.swapchain_framebuffers = create_framebuffers(&runtime.swapchain_arena, runtime.swapchain_image_views, runtime.logical_device, runtime.render_pass, runtime.swapchain_info.extent);
 
     runtime.command_pool = create_command_pool(&arena, indices, runtime.logical_device);
-    runtime.command_buffer = create_command_buffer(runtime.logical_device, runtime.command_pool);
-    create_sync_objects(runtime.logical_device, runtime.img_available_semaphore, runtime.render_finished_semaphore, runtime.inflight_fence);
+    runtime.command_buffers = create_command_buffers(&arena, runtime.logical_device, runtime.command_pool);
+    create_sync_objects(&arena, runtime.logical_device, runtime.img_available_semaphores, runtime.render_finished_semaphores, runtime.inflight_fences);
     LOG_INFO("Vulkan initialization complete. Arena %i / %i bytes", arena.offset, arena.backing_mem_size);
     return runtime;
 }
@@ -1142,15 +1154,16 @@ void recreate_swapchain(RuntimeData& runtime)
 // draws a frame
 void vulkanMainLoop(RuntimeData& runtime)
 {
+    u32& current_frame = runtime.current_frame;
     // wait until previous frame is finished drawing
-    vkWaitForFences(runtime.logical_device, 1, &runtime.inflight_fence, VK_TRUE, UINT64_MAX);
+    vkWaitForFences(runtime.logical_device, 1, &runtime.inflight_fences.data[current_frame], VK_TRUE, UINT64_MAX);
 
     // aquire image from swapchain
     u32 img_index;
     // img_available_semaphore is signaled when we aquire this image
     VkResult result = vkAcquireNextImageKHR(
         runtime.logical_device, runtime.swapchain_info.swapchain, 
-        UINT64_MAX, runtime.img_available_semaphore, VK_NULL_HANDLE, &img_index);
+        UINT64_MAX, runtime.img_available_semaphores.data[current_frame], VK_NULL_HANDLE, &img_index);
     if (result == VK_ERROR_OUT_OF_DATE_KHR)
     {
         // if we need to recreate the swapchain
@@ -1163,27 +1176,27 @@ void vulkanMainLoop(RuntimeData& runtime)
     }
     // after waiting, if we know we are going to submit work (we might not if we need to recreate swapchain)
     // reset fence to unsignaled state
-    vkResetFences(runtime.logical_device, 1, &runtime.inflight_fence);
+    vkResetFences(runtime.logical_device, 1, &runtime.inflight_fences.data[current_frame]);
 
-    vkResetCommandBuffer(runtime.command_buffer, 0);
-    record_cmd_buffer(runtime.command_buffer, img_index, runtime.render_pass, runtime.swapchain_info, runtime.swapchain_framebuffers, runtime.graphics_pipeline);
+    vkResetCommandBuffer(runtime.command_buffers.data[current_frame], 0);
+    record_cmd_buffer(runtime.command_buffers.data[current_frame], img_index, runtime.render_pass, runtime.swapchain_info, runtime.swapchain_framebuffers, runtime.graphics_pipeline);
 
     // submitting the recorded command buffer
     VkSubmitInfo submit_info = {};
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    VkSemaphore wait_semaphores[] = {runtime.img_available_semaphore};
+    VkSemaphore wait_semaphores[] = {runtime.img_available_semaphores.data[current_frame]};
     VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
     submit_info.waitSemaphoreCount = 1;
     submit_info.pWaitSemaphores = wait_semaphores;
     submit_info.pWaitDstStageMask = waitStages;
     submit_info.commandBufferCount = 1;
-    submit_info.pCommandBuffers = &runtime.command_buffer;
-    VkSemaphore signal_semaphores[] = {runtime.render_finished_semaphore};
+    submit_info.pCommandBuffers = &runtime.command_buffers.data[current_frame];
+    VkSemaphore signal_semaphores[] = {runtime.render_finished_semaphores.data[current_frame]};
     submit_info.signalSemaphoreCount = 1;
     submit_info.pSignalSemaphores = signal_semaphores;
     // last parameter is the fence to signal when this queue is done (in this case - finished drawing)
     // since we wait on that fence at the beginning of the frame
-    result = vkQueueSubmit(runtime.graphics_queue, 1, &submit_info, runtime.inflight_fence);
+    result = vkQueueSubmit(runtime.graphics_queue, 1, &submit_info, runtime.inflight_fences.data[current_frame]);
     VK_CHECK(result);
 
     VkPresentInfoKHR present_info = {};
@@ -1202,6 +1215,7 @@ void vulkanMainLoop(RuntimeData& runtime)
         runtime.framebufferWasResized = false;
         recreate_swapchain(runtime);
     }
+    current_frame = (current_frame+1) % MAX_FRAMES_IN_FLIGHT;
 }
 
 
@@ -1214,9 +1228,12 @@ void vulkanCleanup(RuntimeData& runtime)
         DestroyDebugUtilsMessengerEXT(runtime.instance, runtime.debug_messenger, nullptr);
     }
     destroy_swapchain(runtime);
-    vkDestroySemaphore(runtime.logical_device, runtime.img_available_semaphore, nullptr);
-    vkDestroySemaphore(runtime.logical_device, runtime.render_finished_semaphore, nullptr);
-    vkDestroyFence(runtime.logical_device, runtime.inflight_fence, nullptr);
+    for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        vkDestroySemaphore(runtime.logical_device, runtime.img_available_semaphores.data[i], nullptr);
+        vkDestroySemaphore(runtime.logical_device, runtime.render_finished_semaphores.data[i], nullptr);
+        vkDestroyFence(runtime.logical_device, runtime.inflight_fences.data[i], nullptr);
+    }
     vkDestroyCommandPool(runtime.logical_device, runtime.command_pool, nullptr);
     vkDestroyPipeline(runtime.logical_device, runtime.graphics_pipeline, nullptr);
     vkDestroyPipelineLayout(runtime.logical_device, runtime.pipline_layout, nullptr);
