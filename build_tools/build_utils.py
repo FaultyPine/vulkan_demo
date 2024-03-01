@@ -36,7 +36,7 @@ def build_dll_linker_args():
     return "/DLL"
 
 def build_common_compiler_args():
-    return "-MD -MF $out.d"
+    return "-MD -MF out.d"
 
 # ===========================================================================================
 
@@ -114,7 +114,7 @@ def generate_ninjafile(
         command="$cxx $compiler_args -c $in -o $out -w",
         description="BUILD $out",
         deps="gcc",
-        depfile="$builddir/$out.d")
+        depfile="out.d")
     n.rule(
         name="link",
         #command="LINK -OUT:$out $in $linker_args",

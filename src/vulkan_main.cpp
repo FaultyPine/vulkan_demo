@@ -5,7 +5,6 @@
 #include "tiny/tiny_arena.h"
 
 #include <optional>
-#include <vector>
 #include <set>
 #include <string.h>
 #include <fstream>
@@ -14,8 +13,14 @@
 #define CLAMP(x, min, max) (x < min ? min : (x > max ? max : x))
 
 /* BOOKMARK:
-https://vulkan-tutorial.com/Drawing_a_triangle/Drawing/Frames_in_flight
+https://vulkan-tutorial.com/en/Vertex_buffers/Staging_buffer
 */ 
+
+const std::vector<Vertex> vertices = {
+    {{0.0f, -0.5f}, {1.0f, 1.0f, 1.0f}},
+    {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+};
 
 #define VK_CHECK(vkResult) \
     TINY_ASSERT(vkResult == VK_SUCCESS);
@@ -793,13 +798,14 @@ VkPipeline create_graphics_pipeline(
     VkPipelineShaderStageCreateInfo shader_stages[] = {vert_stage_info, fragshader_stage_info};
 
     // Vertex Input
-    // hard coding vertex data in vert shader rn, this'll matter when doing vertex buffers
+    VkVertexInputBindingDescription binding_descrip = Vertex::get_binding_description();
+    std::array<VkVertexInputAttributeDescription, 2> attributes_descrip = Vertex::get_attribute_descriptions();
     VkPipelineVertexInputStateCreateInfo vertex_input_info = {};
     vertex_input_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertex_input_info.vertexBindingDescriptionCount = 0;
-    vertex_input_info.pVertexBindingDescriptions = nullptr;
-    vertex_input_info.vertexAttributeDescriptionCount = 0;
-    vertex_input_info.pVertexAttributeDescriptions = nullptr;
+    vertex_input_info.vertexBindingDescriptionCount = 1;
+    vertex_input_info.pVertexBindingDescriptions = &binding_descrip;
+    vertex_input_info.vertexAttributeDescriptionCount = (u32)attributes_descrip.size();
+    vertex_input_info.pVertexAttributeDescriptions = attributes_descrip.data();
 
     // Input Assembly
     VkPipelineInputAssemblyStateCreateInfo input_assembly_info = {};
@@ -1004,7 +1010,8 @@ void record_cmd_buffer(
     VkRenderPass render_pass,
     const SwapchainInfo& swapchain_info,
     BufferView<VkFramebuffer> swapchain_framebuffers,
-    VkPipeline graphics_pipeline)
+    VkPipeline graphics_pipeline,
+    VkBuffer vertex_buffer)
 {
     VkCommandBufferBeginInfo begin_info = {};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1043,8 +1050,14 @@ void record_cmd_buffer(
     scissor.extent = swapchain_info.extent;
     vkCmdSetScissor(cmd_buffer, 0, 1, &scissor);
 
+    vkCmdBindPipeline(cmd_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
+
+    VkBuffer vertexBuffers[] = {vertex_buffer};
+    VkDeviceSize offsets[] = {0};
+    vkCmdBindVertexBuffers(cmd_buffer, 0, 1, vertexBuffers, offsets);
+
+    vkCmdDraw(cmd_buffer, static_cast<uint32_t>(vertices.size()), 1, 0, 0);
     // vertex count, instance count, first vertex, first instance
-    vkCmdDraw(cmd_buffer, 3, 1, 0, 0);
 
     vkCmdEndRenderPass(cmd_buffer);
     result = vkEndCommandBuffer(cmd_buffer);
@@ -1082,6 +1095,73 @@ void create_sync_objects(
     }
 }
 
+// find memory type to allocate based on the device's properties, as well as desired properties/types
+u32 find_memory_type(
+    VkPhysicalDevice physical_device,
+    u32 type_filter, 
+    VkMemoryPropertyFlags properties)
+{
+    VkPhysicalDeviceMemoryProperties mem_props = {};
+    vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_props);
+    // find memory type suitable for the given type filter
+    for (u32 i = 0; i < mem_props.memoryTypeCount; i++)
+    {
+        // does this mem type support all the properties we need?
+        bool mem_properties_supported = (mem_props.memoryTypes[i].propertyFlags & properties) == properties;
+        if (type_filter & (1 << i) && mem_properties_supported)
+        {
+            return i;
+        }
+    }
+    return U32_INVALID_ID;
+}
+
+VkDeviceMemory alloc_vertex_mem(
+    VkDevice logical_device,
+    VkPhysicalDevice physical_device,
+    VkBuffer vertex_buffer)
+{
+    // what mem requirements does this particular buffer have?
+    VkMemoryRequirements mem_requirements = {};
+    vkGetBufferMemoryRequirements(logical_device, vertex_buffer, &mem_requirements);
+    // actually allocate
+    VkMemoryAllocateInfo alloc_info = {};
+    alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    alloc_info.allocationSize = mem_requirements.size;
+    alloc_info.memoryTypeIndex = find_memory_type(physical_device, mem_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkDeviceMemory mem = {};
+    VkResult result = vkAllocateMemory(logical_device, &alloc_info, nullptr, &mem);
+    VK_CHECK(result);
+    result = vkBindBufferMemory(logical_device, vertex_buffer, mem, 0); // associate the allocated mem with the passed in buffer
+    VK_CHECK(result);
+    return mem;
+}
+
+void create_vertex_buffer(
+    VkDevice logical_device, 
+    VkPhysicalDevice physical_device,
+    VkBuffer& vertex_buffer_out,
+    VkDeviceMemory& mem_out)
+{
+    VkBufferCreateInfo buffer_info = {};
+    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.size = sizeof(vertices[0]) * vertices.size();
+    buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT; // bitfield of uses for this vertex buffer
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // will only be used by graphics queue
+    VkResult result = vkCreateBuffer(logical_device, &buffer_info, nullptr, &vertex_buffer_out);
+    VK_CHECK(result);
+    mem_out = alloc_vertex_mem(logical_device, physical_device, vertex_buffer_out);
+
+    // maps buffer memory (specified by the VkDeviceMemory) into cpu accessible memory
+    void* data;
+    vkMapMemory(logical_device, mem_out, 0, buffer_info.size, 0, &data);
+    // driver may not immediately copy the data into the buffer memory
+    // can deal with this by specifying memory heap with VK_MEMORY_PROPERTY_HOST_COHERENT_BIT (doing this rn)
+    // or call vkFlushMappedMemoryRanges after writing to mapped mem, and vkInvalidateMappedMemoryRanges before reading from it (ensures it's updated before reading/writing)
+    memcpy(data, vertices.data(), (size_t)buffer_info.size);
+    vkUnmapMemory(logical_device, mem_out);
+}
+
 RuntimeData initVulkan()
 {
     const u32 program_max_mem = MEGABYTES_BYTES(2);
@@ -1112,6 +1192,9 @@ RuntimeData initVulkan()
     runtime.command_pool = create_command_pool(&arena, indices, runtime.logical_device);
     runtime.command_buffers = create_command_buffers(&arena, runtime.logical_device, runtime.command_pool);
     create_sync_objects(&arena, runtime.logical_device, runtime.img_available_semaphores, runtime.render_finished_semaphores, runtime.inflight_fences);
+    
+    create_vertex_buffer(runtime.logical_device, runtime.physical_device, runtime.vertex_buffer, runtime.vertex_buffer_mem);
+
     LOG_INFO("Vulkan initialization complete. Arena %i / %i bytes", arena.offset, arena.backing_mem_size);
     return runtime;
 }
@@ -1179,7 +1262,13 @@ void vulkanMainLoop(RuntimeData& runtime)
     vkResetFences(runtime.logical_device, 1, &runtime.inflight_fences.data[current_frame]);
 
     vkResetCommandBuffer(runtime.command_buffers.data[current_frame], 0);
-    record_cmd_buffer(runtime.command_buffers.data[current_frame], img_index, runtime.render_pass, runtime.swapchain_info, runtime.swapchain_framebuffers, runtime.graphics_pipeline);
+    record_cmd_buffer(runtime.command_buffers.data[current_frame], 
+                        img_index, 
+                        runtime.render_pass, 
+                        runtime.swapchain_info, 
+                        runtime.swapchain_framebuffers, 
+                        runtime.graphics_pipeline, 
+                        runtime.vertex_buffer);
 
     // submitting the recorded command buffer
     VkSubmitInfo submit_info = {};
@@ -1234,6 +1323,8 @@ void vulkanCleanup(RuntimeData& runtime)
         vkDestroySemaphore(runtime.logical_device, runtime.render_finished_semaphores.data[i], nullptr);
         vkDestroyFence(runtime.logical_device, runtime.inflight_fences.data[i], nullptr);
     }
+    vkDestroyBuffer(runtime.logical_device, runtime.vertex_buffer, nullptr);
+    vkFreeMemory(runtime.logical_device, runtime.vertex_buffer_mem, nullptr);
     vkDestroyCommandPool(runtime.logical_device, runtime.command_pool, nullptr);
     vkDestroyPipeline(runtime.logical_device, runtime.graphics_pipeline, nullptr);
     vkDestroyPipelineLayout(runtime.logical_device, runtime.pipline_layout, nullptr);

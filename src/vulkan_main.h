@@ -10,11 +10,43 @@
 #define GLFW_INCLUDE_VULKAN
 #include "glfw/glfw3.h"
 #include <GLFW/glfw3native.h>
+#include <glm/glm.hpp>
+
+#include <vector>
+#include <array>
 
 #include "defines.h"
 #include "tiny/tiny_arena.h"
 
 constexpr u32 MAX_FRAMES_IN_FLIGHT = 2;
+
+struct Vertex
+{
+    glm::vec2 pos;
+    glm::vec3 color;
+    static VkVertexInputBindingDescription get_binding_description()
+    {
+        VkVertexInputBindingDescription description = {};
+        description.binding = 0; // index in array of possibly multiple bindings. Only one binding here so idx 0
+        description.stride = sizeof(Vertex); // bytes between vertices
+        description.inputRate = VK_VERTEX_INPUT_RATE_VERTEX; // move to next entry after each vertex or after each instance
+        return description;
+    }
+    static std::array<VkVertexInputAttributeDescription, 2> get_attribute_descriptions()
+    {
+        // An attribute description struct describes how to extract a vertex attribute from a chunk of vertex data originating from a binding description
+        std::array<VkVertexInputAttributeDescription, 2> descriptions = {};
+        descriptions[0].binding = 0;
+        descriptions[0].location = 0; // same as in vert shader
+        descriptions[0].format = VK_FORMAT_R32G32_SFLOAT; // means vec2
+        descriptions[0].offset = offsetof(Vertex, pos);
+        descriptions[1].binding = 0;
+        descriptions[1].location = 1; // same as vert shader
+        descriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+        descriptions[1].offset = offsetof(Vertex, color);
+        return descriptions;
+    }
+};
 
 // non-owning
 template <typename T>
@@ -53,6 +85,8 @@ struct RuntimeData
     BufferView<VkSemaphore> img_available_semaphores = {};
     BufferView<VkSemaphore> render_finished_semaphores = {};
     BufferView<VkFence> inflight_fences = {};
+    VkBuffer vertex_buffer = {};
+    VkDeviceMemory vertex_buffer_mem = {};
     bool framebufferWasResized = false;
     Arena arena = {};
     Arena swapchain_arena = {};
