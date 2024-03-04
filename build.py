@@ -32,7 +32,7 @@ def get_compiler_args_clang():
     include_root_paths = ["", "external", "src"]
     include_paths = include_paths_str(to_root, include_root_paths)
     return clean_string(f"""
-        -g -O1 -std=c++17 {build_common_compiler_args()} {include_paths} {cpp_ver_arg()}
+        -g -O0 -std=c++17 {build_common_compiler_args()} {include_paths} {cpp_ver_arg()}
     """)
 
 

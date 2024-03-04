@@ -1116,14 +1116,14 @@ u32 find_memory_type(
     return U32_INVALID_ID;
 }
 
-VkDeviceMemory alloc_vertex_mem(
+VkDeviceMemory alloc_mem(
     VkDevice logical_device,
     VkPhysicalDevice physical_device,
-    VkBuffer vertex_buffer)
+    VkBuffer buffer)
 {
     // what mem requirements does this particular buffer have?
     VkMemoryRequirements mem_requirements = {};
-    vkGetBufferMemoryRequirements(logical_device, vertex_buffer, &mem_requirements);
+    vkGetBufferMemoryRequirements(logical_device, buffer, &mem_requirements);
     // actually allocate
     VkMemoryAllocateInfo alloc_info = {};
     alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -1132,9 +1132,28 @@ VkDeviceMemory alloc_vertex_mem(
     VkDeviceMemory mem = {};
     VkResult result = vkAllocateMemory(logical_device, &alloc_info, nullptr, &mem);
     VK_CHECK(result);
-    result = vkBindBufferMemory(logical_device, vertex_buffer, mem, 0); // associate the allocated mem with the passed in buffer
+    result = vkBindBufferMemory(logical_device, buffer, mem, 0); // associate the allocated mem with the passed in buffer
     VK_CHECK(result);
     return mem;
+}
+
+void create_buffer(
+    VkDevice logical_device,
+    VkPhysicalDevice physical_device,
+    VkDeviceSize size, 
+    VkBufferUsageFlags usage, 
+    VkMemoryPropertyFlags properties,
+    VkBuffer& buffer, 
+    VkDeviceMemory& buffer_mem)
+{
+    VkBufferCreateInfo buffer_info = {};
+    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.size = size;
+    buffer_info.usage = usage;
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkResult result = vkCreateBuffer(logical_device, &buffer_info, nullptr, &buffer);
+    VK_CHECK(result);
+    buffer_mem = alloc_mem(logical_device, physical_device, buffer);
 }
 
 void create_vertex_buffer(
@@ -1143,22 +1162,18 @@ void create_vertex_buffer(
     VkBuffer& vertex_buffer_out,
     VkDeviceMemory& mem_out)
 {
-    VkBufferCreateInfo buffer_info = {};
-    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buffer_info.size = sizeof(vertices[0]) * vertices.size();
-    buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT; // bitfield of uses for this vertex buffer
-    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // will only be used by graphics queue
-    VkResult result = vkCreateBuffer(logical_device, &buffer_info, nullptr, &vertex_buffer_out);
-    VK_CHECK(result);
-    mem_out = alloc_vertex_mem(logical_device, physical_device, vertex_buffer_out);
-
+    VkDeviceSize buffer_size = sizeof(vertices[0]) * vertices.size();
+    create_buffer(logical_device, physical_device, buffer_size, 
+                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                vertex_buffer_out, mem_out);
     // maps buffer memory (specified by the VkDeviceMemory) into cpu accessible memory
     void* data;
-    vkMapMemory(logical_device, mem_out, 0, buffer_info.size, 0, &data);
+    vkMapMemory(logical_device, mem_out, 0, buffer_size, 0, &data);
     // driver may not immediately copy the data into the buffer memory
     // can deal with this by specifying memory heap with VK_MEMORY_PROPERTY_HOST_COHERENT_BIT (doing this rn)
     // or call vkFlushMappedMemoryRanges after writing to mapped mem, and vkInvalidateMappedMemoryRanges before reading from it (ensures it's updated before reading/writing)
-    memcpy(data, vertices.data(), (size_t)buffer_info.size);
+    memcpy(data, vertices.data(), (size_t)buffer_size);
     vkUnmapMemory(logical_device, mem_out);
 }
 
