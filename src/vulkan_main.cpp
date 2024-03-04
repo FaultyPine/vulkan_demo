@@ -13,7 +13,7 @@
 #define CLAMP(x, min, max) (x < min ? min : (x > max ? max : x))
 
 /* BOOKMARK:
-https://vulkan-tutorial.com/en/Vertex_buffers/Staging_buffer
+https://vulkan-tutorial.com/en/Vertex_buffers/Index_buffer
 */ 
 
 const std::vector<Vertex> vertices = {
@@ -1156,25 +1156,86 @@ void create_buffer(
     buffer_mem = alloc_mem(logical_device, physical_device, buffer);
 }
 
+void copy_buffer(
+    VkDevice logical_device,
+    VkCommandPool cmd_pool,
+    VkQueue graphics_queue,
+    VkBuffer src_buffer, 
+    VkBuffer dst_buffer, 
+    VkDeviceSize size)
+{
+    VkCommandBufferAllocateInfo alloc_info = {};
+    alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    alloc_info.commandPool = cmd_pool;
+    alloc_info.commandBufferCount = 1;
+
+    VkCommandBuffer cmd_buf = {};
+    VkResult result = vkAllocateCommandBuffers(logical_device, &alloc_info, &cmd_buf);
+    VK_CHECK(result);
+
+    VkCommandBufferBeginInfo begininfo = {};
+    begininfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begininfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd_buf, &begininfo);
+
+    VkBufferCopy copyregion = {};
+    copyregion.srcOffset = 0; // optional
+    copyregion.dstOffset = 0; // optional
+    copyregion.size = size;
+    vkCmdCopyBuffer(cmd_buf, src_buffer, dst_buffer, 1, &copyregion);
+
+    vkEndCommandBuffer(cmd_buf);
+
+    VkSubmitInfo submit = {};
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &cmd_buf;
+    vkQueueSubmit(graphics_queue, 1, &submit, VK_NULL_HANDLE);
+    // could use a fence so multiple transfers could happen simultaneously
+    // waiting for whole queue to become idle here
+    vkQueueWaitIdle(graphics_queue); 
+    vkFreeCommandBuffers(logical_device, cmd_pool, 1, &cmd_buf);
+}
+
 void create_vertex_buffer(
     VkDevice logical_device, 
     VkPhysicalDevice physical_device,
+    VkCommandPool cmd_pool,
+    VkQueue graphics_queue,
     VkBuffer& vertex_buffer_out,
     VkDeviceMemory& mem_out)
 {
     VkDeviceSize buffer_size = sizeof(vertices[0]) * vertices.size();
-    create_buffer(logical_device, physical_device, buffer_size, 
-                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                vertex_buffer_out, mem_out);
-    // maps buffer memory (specified by the VkDeviceMemory) into cpu accessible memory
+    
+    // create a middleman buffer on the CPU to transfer vertex data to
+    // then we transfer into that buffer
+    // then we create a buffer local to the GPU for the final vertex data to reside in
+    VkBuffer staging_buffer;
+    VkDeviceMemory staging_buffer_mem;
+    create_buffer(logical_device, physical_device, buffer_size,
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT, // source buffer
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, // on CPU
+                staging_buffer, staging_buffer_mem);
+
+    // maps staging buffer to CPU memory so we can transfer our vertex data to it
     void* data;
-    vkMapMemory(logical_device, mem_out, 0, buffer_size, 0, &data);
+    vkMapMemory(logical_device, staging_buffer_mem, 0, buffer_size, 0, &data);
     // driver may not immediately copy the data into the buffer memory
     // can deal with this by specifying memory heap with VK_MEMORY_PROPERTY_HOST_COHERENT_BIT (doing this rn)
     // or call vkFlushMappedMemoryRanges after writing to mapped mem, and vkInvalidateMappedMemoryRanges before reading from it (ensures it's updated before reading/writing)
     memcpy(data, vertices.data(), (size_t)buffer_size);
-    vkUnmapMemory(logical_device, mem_out);
+    vkUnmapMemory(logical_device, staging_buffer_mem);
+
+    create_buffer(logical_device, physical_device, buffer_size, 
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, // destination, and is vert buff
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, // on the GPU
+                vertex_buffer_out, mem_out);
+
+    // TODO: actually transfer from staging buffer to gpu local buffer
+    copy_buffer(logical_device, cmd_pool, graphics_queue, staging_buffer, vertex_buffer_out, buffer_size);
+    vkDestroyBuffer(logical_device, staging_buffer, nullptr);
+    vkFreeMemory(logical_device, staging_buffer_mem, nullptr);
 }
 
 RuntimeData initVulkan()
@@ -1208,7 +1269,7 @@ RuntimeData initVulkan()
     runtime.command_buffers = create_command_buffers(&arena, runtime.logical_device, runtime.command_pool);
     create_sync_objects(&arena, runtime.logical_device, runtime.img_available_semaphores, runtime.render_finished_semaphores, runtime.inflight_fences);
     
-    create_vertex_buffer(runtime.logical_device, runtime.physical_device, runtime.vertex_buffer, runtime.vertex_buffer_mem);
+    create_vertex_buffer(runtime.logical_device, runtime.physical_device, runtime.command_pool, runtime.graphics_queue, runtime.vertex_buffer, runtime.vertex_buffer_mem);
 
     LOG_INFO("Vulkan initialization complete. Arena %i / %i bytes", arena.offset, arena.backing_mem_size);
     return runtime;
