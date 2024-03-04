@@ -16,11 +16,20 @@
 https://vulkan-tutorial.com/en/Vertex_buffers/Index_buffer
 */ 
 
-const std::vector<Vertex> vertices = {
-    {{0.0f, -0.5f}, {1.0f, 1.0f, 1.0f}},
-    {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
-    {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+namespace vertex_data_test
+{
+const std::vector<Vertex> vertices = 
+{
+    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+    {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
 };
+const std::vector<u32> indices = 
+{
+    0, 1, 2, 2, 3, 0
+};
+}
 
 #define VK_CHECK(vkResult) \
     TINY_ASSERT(vkResult == VK_SUCCESS);
@@ -1011,7 +1020,8 @@ void record_cmd_buffer(
     const SwapchainInfo& swapchain_info,
     BufferView<VkFramebuffer> swapchain_framebuffers,
     VkPipeline graphics_pipeline,
-    VkBuffer vertex_buffer)
+    VkBuffer vertex_buffer,
+    VkBuffer index_buffer)
 {
     VkCommandBufferBeginInfo begin_info = {};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1055,9 +1065,9 @@ void record_cmd_buffer(
     VkBuffer vertexBuffers[] = {vertex_buffer};
     VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(cmd_buffer, 0, 1, vertexBuffers, offsets);
+    vkCmdBindIndexBuffer(cmd_buffer, index_buffer, 0, VK_INDEX_TYPE_UINT32);
 
-    vkCmdDraw(cmd_buffer, static_cast<uint32_t>(vertices.size()), 1, 0, 0);
-    // vertex count, instance count, first vertex, first instance
+    vkCmdDrawIndexed(cmd_buffer, static_cast<u32>(vertex_data_test::indices.size()), 1, 0, 0, 0);
 
     vkCmdEndRenderPass(cmd_buffer);
     result = vkEndCommandBuffer(cmd_buffer);
@@ -1203,6 +1213,7 @@ void create_vertex_buffer(
     VkPhysicalDevice physical_device,
     VkCommandPool cmd_pool,
     VkQueue graphics_queue,
+    const std::vector<Vertex>& vertices,
     VkBuffer& vertex_buffer_out,
     VkDeviceMemory& mem_out)
 {
@@ -1238,6 +1249,47 @@ void create_vertex_buffer(
     vkFreeMemory(logical_device, staging_buffer_mem, nullptr);
 }
 
+void create_index_buffer(
+    VkDevice logical_device, 
+    VkPhysicalDevice physical_device,
+    VkCommandPool cmd_pool,
+    VkQueue graphics_queue,
+    const std::vector<u32>& indices,
+    VkBuffer& index_buffer_out,
+    VkDeviceMemory& mem_out)
+{
+    VkDeviceSize buffer_size = sizeof(indices[0]) * indices.size();
+    
+    // create a middleman buffer on the CPU to transfer vertex data to
+    // then we transfer into that buffer
+    // then we create a buffer local to the GPU for the final vertex data to reside in
+    VkBuffer staging_buffer;
+    VkDeviceMemory staging_buffer_mem;
+    create_buffer(logical_device, physical_device, buffer_size,
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT, // source buffer
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, // on CPU
+                staging_buffer, staging_buffer_mem);
+
+    // maps staging buffer to CPU memory so we can transfer our vertex data to it
+    void* data;
+    vkMapMemory(logical_device, staging_buffer_mem, 0, buffer_size, 0, &data);
+    // driver may not immediately copy the data into the buffer memory
+    // can deal with this by specifying memory heap with VK_MEMORY_PROPERTY_HOST_COHERENT_BIT (doing this rn)
+    // or call vkFlushMappedMemoryRanges after writing to mapped mem, and vkInvalidateMappedMemoryRanges before reading from it (ensures it's updated before reading/writing)
+    memcpy(data, indices.data(), (size_t)buffer_size);
+    vkUnmapMemory(logical_device, staging_buffer_mem);
+
+    create_buffer(logical_device, physical_device, buffer_size, 
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, // destination, and is vert buff
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, // on the GPU
+                index_buffer_out, mem_out);
+
+    // TODO: actually transfer from staging buffer to gpu local buffer
+    copy_buffer(logical_device, cmd_pool, graphics_queue, staging_buffer, index_buffer_out, buffer_size);
+    vkDestroyBuffer(logical_device, staging_buffer, nullptr);
+    vkFreeMemory(logical_device, staging_buffer_mem, nullptr);
+}
+
 RuntimeData initVulkan()
 {
     const u32 program_max_mem = MEGABYTES_BYTES(2);
@@ -1269,7 +1321,8 @@ RuntimeData initVulkan()
     runtime.command_buffers = create_command_buffers(&arena, runtime.logical_device, runtime.command_pool);
     create_sync_objects(&arena, runtime.logical_device, runtime.img_available_semaphores, runtime.render_finished_semaphores, runtime.inflight_fences);
     
-    create_vertex_buffer(runtime.logical_device, runtime.physical_device, runtime.command_pool, runtime.graphics_queue, runtime.vertex_buffer, runtime.vertex_buffer_mem);
+    create_vertex_buffer(runtime.logical_device, runtime.physical_device, runtime.command_pool, runtime.graphics_queue, vertex_data_test::vertices, runtime.vertex_buffer, runtime.vertex_buffer_mem);
+    create_index_buffer(runtime.logical_device, runtime.physical_device, runtime.command_pool, runtime.graphics_queue, vertex_data_test::indices, runtime.index_buffer, runtime.index_buffer_mem);
 
     LOG_INFO("Vulkan initialization complete. Arena %i / %i bytes", arena.offset, arena.backing_mem_size);
     return runtime;
@@ -1344,7 +1397,8 @@ void vulkanMainLoop(RuntimeData& runtime)
                         runtime.swapchain_info, 
                         runtime.swapchain_framebuffers, 
                         runtime.graphics_pipeline, 
-                        runtime.vertex_buffer);
+                        runtime.vertex_buffer,
+                        runtime.index_buffer);
 
     // submitting the recorded command buffer
     VkSubmitInfo submit_info = {};
@@ -1401,6 +1455,8 @@ void vulkanCleanup(RuntimeData& runtime)
     }
     vkDestroyBuffer(runtime.logical_device, runtime.vertex_buffer, nullptr);
     vkFreeMemory(runtime.logical_device, runtime.vertex_buffer_mem, nullptr);
+    vkDestroyBuffer(runtime.logical_device, runtime.index_buffer, nullptr);
+    vkFreeMemory(runtime.logical_device, runtime.index_buffer_mem, nullptr);
     vkDestroyCommandPool(runtime.logical_device, runtime.command_pool, nullptr);
     vkDestroyPipeline(runtime.logical_device, runtime.graphics_pipeline, nullptr);
     vkDestroyPipelineLayout(runtime.logical_device, runtime.pipline_layout, nullptr);

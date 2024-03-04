@@ -87,6 +87,8 @@ struct RuntimeData
     BufferView<VkFence> inflight_fences = {};
     VkBuffer vertex_buffer = {};
     VkDeviceMemory vertex_buffer_mem = {};
+    VkBuffer index_buffer = {};
+    VkDeviceMemory index_buffer_mem = {};
     bool framebufferWasResized = false;
     Arena arena = {};
     Arena swapchain_arena = {};
