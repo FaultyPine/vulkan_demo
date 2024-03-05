@@ -10,7 +10,10 @@
 #define GLFW_INCLUDE_VULKAN
 #include "glfw/glfw3.h"
 #include <GLFW/glfw3native.h>
+
+#define GLM_FORCE_RADIANS
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <vector>
 #include <array>
@@ -55,6 +58,13 @@ struct BufferView
     T* data = nullptr;
     size_t size = 0;
     inline u32 get_num_elements() { return size / sizeof(T); }
+    static BufferView<T> init_from_arena(Arena* arena, u32 num_elements)
+    {
+        BufferView<T> ret;
+        ret.data = arena_alloc_type(arena, T, num_elements);
+        ret.size = num_elements;
+        return ret;
+    }
 };
 
 struct SwapchainInfo
@@ -77,6 +87,7 @@ struct RuntimeData
     SwapchainInfo swapchain_info = {};
     BufferView<VkImageView> swapchain_image_views = {};
     VkRenderPass render_pass = {};
+    VkDescriptorSetLayout descriptor_set_layout = {};
     VkPipelineLayout pipline_layout = {};
     VkPipeline graphics_pipeline = {};
     BufferView<VkFramebuffer> swapchain_framebuffers = {};
@@ -89,10 +100,13 @@ struct RuntimeData
     VkDeviceMemory vertex_buffer_mem = {};
     VkBuffer index_buffer = {};
     VkDeviceMemory index_buffer_mem = {};
-    bool framebufferWasResized = false;
+    BufferView<VkBuffer> uniform_buffers = {};
+    BufferView<VkDeviceMemory> uniform_buffers_mem = {};
+    BufferView<void*> uniform_buffers_mapped = {};
     Arena arena = {};
     Arena swapchain_arena = {};
     u32 current_frame = 0;
+    bool framebufferWasResized = false;
 };
 
 RuntimeData initVulkan();

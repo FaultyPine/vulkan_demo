@@ -10,22 +10,32 @@
 #include <fstream>
 
 
+#include <chrono>
+
+
 #define CLAMP(x, min, max) (x < min ? min : (x > max ? max : x))
 
 /* BOOKMARK:
-https://vulkan-tutorial.com/en/Vertex_buffers/Index_buffer
+https://vulkan-tutorial.com/en/Uniform_buffers/Descriptor_pool_and_sets
 */ 
+
+struct uniform_buffer_object
+{
+    glm::mat4 model;
+    glm::mat4 view;
+    glm::mat4 proj;
+};
 
 namespace vertex_data_test
 {
-const std::vector<Vertex> vertices = 
+Vertex vertices[] = 
 {
     {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
     {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
     {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
     {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
 };
-const std::vector<u32> indices = 
+u32 indices[] = 
 {
     0, 1, 2, 2, 3, 0
 };
@@ -776,6 +786,7 @@ VkRenderPass create_render_pass(
 VkPipeline create_graphics_pipeline(
     Arena* arena,
     VkDevice logical_device,
+    VkDescriptorSetLayout descriptor_set_layout,
     const SwapchainInfo& swapchain,
     VkRenderPass render_pass,
     VkPipelineLayout& pipeline_layout_out)
@@ -915,8 +926,8 @@ VkPipeline create_graphics_pipeline(
     // Pipeline layout
     VkPipelineLayoutCreateInfo pipline_layout_info = {};
     pipline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipline_layout_info.setLayoutCount = 0;
-    pipline_layout_info.pSetLayouts = nullptr;
+    pipline_layout_info.setLayoutCount = 1;
+    pipline_layout_info.pSetLayouts = &descriptor_set_layout;
     pipline_layout_info.pushConstantRangeCount = 0;
     pipline_layout_info.pPushConstantRanges = nullptr;
     VkResult result = vkCreatePipelineLayout(logical_device, &pipline_layout_info, nullptr, &pipeline_layout_out);
@@ -1067,7 +1078,7 @@ void record_cmd_buffer(
     vkCmdBindVertexBuffers(cmd_buffer, 0, 1, vertexBuffers, offsets);
     vkCmdBindIndexBuffer(cmd_buffer, index_buffer, 0, VK_INDEX_TYPE_UINT32);
 
-    vkCmdDrawIndexed(cmd_buffer, static_cast<u32>(vertex_data_test::indices.size()), 1, 0, 0, 0);
+    vkCmdDrawIndexed(cmd_buffer, ARRAY_SIZE(vertex_data_test::indices), 1, 0, 0, 0);
 
     vkCmdEndRenderPass(cmd_buffer);
     result = vkEndCommandBuffer(cmd_buffer);
@@ -1213,11 +1224,11 @@ void create_vertex_buffer(
     VkPhysicalDevice physical_device,
     VkCommandPool cmd_pool,
     VkQueue graphics_queue,
-    const std::vector<Vertex>& vertices,
+    BufferView<Vertex> vertices,
     VkBuffer& vertex_buffer_out,
     VkDeviceMemory& mem_out)
 {
-    VkDeviceSize buffer_size = sizeof(vertices[0]) * vertices.size();
+    VkDeviceSize buffer_size = sizeof(vertices.data[0]) * vertices.size;
     
     // create a middleman buffer on the CPU to transfer vertex data to
     // then we transfer into that buffer
@@ -1235,7 +1246,7 @@ void create_vertex_buffer(
     // driver may not immediately copy the data into the buffer memory
     // can deal with this by specifying memory heap with VK_MEMORY_PROPERTY_HOST_COHERENT_BIT (doing this rn)
     // or call vkFlushMappedMemoryRanges after writing to mapped mem, and vkInvalidateMappedMemoryRanges before reading from it (ensures it's updated before reading/writing)
-    memcpy(data, vertices.data(), (size_t)buffer_size);
+    memcpy(data, vertices.data, (size_t)buffer_size);
     vkUnmapMemory(logical_device, staging_buffer_mem);
 
     create_buffer(logical_device, physical_device, buffer_size, 
@@ -1254,11 +1265,11 @@ void create_index_buffer(
     VkPhysicalDevice physical_device,
     VkCommandPool cmd_pool,
     VkQueue graphics_queue,
-    const std::vector<u32>& indices,
+    BufferView<u32> indices,
     VkBuffer& index_buffer_out,
     VkDeviceMemory& mem_out)
 {
-    VkDeviceSize buffer_size = sizeof(indices[0]) * indices.size();
+    VkDeviceSize buffer_size = sizeof(indices.data[0]) * indices.size;
     
     // create a middleman buffer on the CPU to transfer vertex data to
     // then we transfer into that buffer
@@ -1276,7 +1287,7 @@ void create_index_buffer(
     // driver may not immediately copy the data into the buffer memory
     // can deal with this by specifying memory heap with VK_MEMORY_PROPERTY_HOST_COHERENT_BIT (doing this rn)
     // or call vkFlushMappedMemoryRanges after writing to mapped mem, and vkInvalidateMappedMemoryRanges before reading from it (ensures it's updated before reading/writing)
-    memcpy(data, indices.data(), (size_t)buffer_size);
+    memcpy(data, indices.data, (size_t)buffer_size);
     vkUnmapMemory(logical_device, staging_buffer_mem);
 
     create_buffer(logical_device, physical_device, buffer_size, 
@@ -1288,6 +1299,63 @@ void create_index_buffer(
     copy_buffer(logical_device, cmd_pool, graphics_queue, staging_buffer, index_buffer_out, buffer_size);
     vkDestroyBuffer(logical_device, staging_buffer, nullptr);
     vkFreeMemory(logical_device, staging_buffer_mem, nullptr);
+}
+
+VkDescriptorSetLayout create_descriptor_set_layout(
+    VkDevice logical_device)
+{
+    VkDescriptorSetLayoutBinding ubo_layout_bind = {};
+    ubo_layout_bind.binding = 0; // in shader
+    ubo_layout_bind.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    ubo_layout_bind.descriptorCount = 1;
+    ubo_layout_bind.stageFlags = VK_SHADER_STAGE_VERTEX_BIT; // can also specify ALL_GRAPHICS to have it accessible everywhere
+    ubo_layout_bind.pImmutableSamplers = nullptr; // relevant for image sampling
+    VkDescriptorSetLayoutCreateInfo layout_info = {};
+    layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layout_info.bindingCount = 1;
+    layout_info.pBindings = &ubo_layout_bind;
+    VkDescriptorSetLayout layout;
+    VkResult result = vkCreateDescriptorSetLayout(logical_device, &layout_info, nullptr, &layout);
+    VK_CHECK(result);
+    return layout;
+}
+
+void create_uniform_buffers(
+    Arena* arena,
+    VkDevice logical_device,
+    VkPhysicalDevice physical_device,
+    BufferView<VkBuffer>& uniform_buffers,
+    BufferView<VkDeviceMemory>& uniform_buffers_mem,
+    BufferView<void*>& uniform_buffers_mapped)
+{
+    VkDeviceSize buffer_size = sizeof(uniform_buffer_object);
+    uniform_buffers = BufferView<VkBuffer>::init_from_arena(arena, MAX_FRAMES_IN_FLIGHT);
+    uniform_buffers_mem = BufferView<VkDeviceMemory>::init_from_arena(arena, MAX_FRAMES_IN_FLIGHT);
+    uniform_buffers_mapped = BufferView<void*>::init_from_arena(arena, MAX_FRAMES_IN_FLIGHT);
+    for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        create_buffer(logical_device, physical_device, buffer_size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                    uniform_buffers.data[i], uniform_buffers_mem.data[i]);
+        // persistent mapping. These mapped pointers are stored for the programs lifetime
+        vkMapMemory(logical_device, uniform_buffers_mem.data[i], 0, buffer_size, 0, &uniform_buffers_mapped.data[i]);
+    }
+}
+
+void update_uniform_buffer(
+    u32 current_img_idx,
+    VkExtent2D swapchain_extent,
+    BufferView<void*> uniform_buffers_mapped)
+{
+    static auto start_time = std::chrono::high_resolution_clock::now(); // start time of program
+    auto current_time = std::chrono::high_resolution_clock::now();
+    f32 time = std::chrono::duration<f32, std::chrono::seconds::period>(current_time - start_time).count();
+    uniform_buffer_object ubo = {};
+    // rotate around Z-axis w/time
+    ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    ubo.proj = glm::perspective(glm::radians(45.0f), swapchain_extent.width / (f32)swapchain_extent.height, 0.1f, 10.0f);
+    ubo.proj[1][1] *= -1; // glm designed for OpenGL where Y clip coords are inverted. Flip sign on scaling factor of Y axis for proper image
+    memcpy(uniform_buffers_mapped.data[current_img_idx], &ubo, sizeof(ubo));
 }
 
 RuntimeData initVulkan()
@@ -1314,15 +1382,17 @@ RuntimeData initVulkan()
     runtime.swapchain_info = create_swapchain(&runtime.swapchain_arena, runtime.logical_device, runtime.physical_device, runtime.surface);
     runtime.swapchain_image_views = create_swapchain_image_views(&runtime.swapchain_arena, runtime.logical_device, runtime.swapchain_info);
     runtime.render_pass = create_render_pass(&arena, runtime.logical_device, runtime.swapchain_info);
-    runtime.graphics_pipeline = create_graphics_pipeline(&arena, runtime.logical_device, runtime.swapchain_info, runtime.render_pass, runtime.pipline_layout);
+    runtime.descriptor_set_layout = create_descriptor_set_layout(runtime.logical_device);
+    runtime.graphics_pipeline = create_graphics_pipeline(&arena, runtime.logical_device, runtime.descriptor_set_layout, runtime.swapchain_info, runtime.render_pass, runtime.pipline_layout);
     runtime.swapchain_framebuffers = create_framebuffers(&runtime.swapchain_arena, runtime.swapchain_image_views, runtime.logical_device, runtime.render_pass, runtime.swapchain_info.extent);
 
     runtime.command_pool = create_command_pool(&arena, indices, runtime.logical_device);
     runtime.command_buffers = create_command_buffers(&arena, runtime.logical_device, runtime.command_pool);
     create_sync_objects(&arena, runtime.logical_device, runtime.img_available_semaphores, runtime.render_finished_semaphores, runtime.inflight_fences);
     
-    create_vertex_buffer(runtime.logical_device, runtime.physical_device, runtime.command_pool, runtime.graphics_queue, vertex_data_test::vertices, runtime.vertex_buffer, runtime.vertex_buffer_mem);
-    create_index_buffer(runtime.logical_device, runtime.physical_device, runtime.command_pool, runtime.graphics_queue, vertex_data_test::indices, runtime.index_buffer, runtime.index_buffer_mem);
+    create_vertex_buffer(runtime.logical_device, runtime.physical_device, runtime.command_pool, runtime.graphics_queue, {vertex_data_test::vertices, ARRAY_SIZE(vertex_data_test::vertices)}, runtime.vertex_buffer, runtime.vertex_buffer_mem);
+    create_index_buffer(runtime.logical_device, runtime.physical_device, runtime.command_pool, runtime.graphics_queue, {vertex_data_test::indices, ARRAY_SIZE(vertex_data_test::indices)}, runtime.index_buffer, runtime.index_buffer_mem);
+    create_uniform_buffers(&arena, runtime.logical_device, runtime.physical_device, runtime.uniform_buffers, runtime.uniform_buffers_mem, runtime.uniform_buffers_mapped);
 
     LOG_INFO("Vulkan initialization complete. Arena %i / %i bytes", arena.offset, arena.backing_mem_size);
     return runtime;
@@ -1399,6 +1469,7 @@ void vulkanMainLoop(RuntimeData& runtime)
                         runtime.graphics_pipeline, 
                         runtime.vertex_buffer,
                         runtime.index_buffer);
+    update_uniform_buffer(runtime.current_frame, runtime.swapchain_info.extent, runtime.uniform_buffers_mapped);
 
     // submitting the recorded command buffer
     VkSubmitInfo submit_info = {};
@@ -1453,6 +1524,12 @@ void vulkanCleanup(RuntimeData& runtime)
         vkDestroySemaphore(runtime.logical_device, runtime.render_finished_semaphores.data[i], nullptr);
         vkDestroyFence(runtime.logical_device, runtime.inflight_fences.data[i], nullptr);
     }
+    for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        vkDestroyBuffer(runtime.logical_device, runtime.uniform_buffers.data[i], nullptr);
+        vkFreeMemory(runtime.logical_device, runtime.uniform_buffers_mem.data[i], nullptr);
+    }
+    vkDestroyDescriptorSetLayout(runtime.logical_device, runtime.descriptor_set_layout, nullptr);
     vkDestroyBuffer(runtime.logical_device, runtime.vertex_buffer, nullptr);
     vkFreeMemory(runtime.logical_device, runtime.vertex_buffer_mem, nullptr);
     vkDestroyBuffer(runtime.logical_device, runtime.index_buffer, nullptr);
