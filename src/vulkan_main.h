@@ -88,6 +88,8 @@ struct RuntimeData
     BufferView<VkImageView> swapchain_image_views = {};
     VkRenderPass render_pass = {};
     VkDescriptorSetLayout descriptor_set_layout = {};
+    VkDescriptorPool descriptor_pool = {};
+    BufferView<VkDescriptorSet> descriptor_sets = {};
     VkPipelineLayout pipline_layout = {};
     VkPipeline graphics_pipeline = {};
     BufferView<VkFramebuffer> swapchain_framebuffers = {};

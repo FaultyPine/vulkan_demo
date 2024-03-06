@@ -16,7 +16,7 @@
 #define CLAMP(x, min, max) (x < min ? min : (x > max ? max : x))
 
 /* BOOKMARK:
-https://vulkan-tutorial.com/en/Uniform_buffers/Descriptor_pool_and_sets
+https://vulkan-tutorial.com/Texture_mapping/Images
 */ 
 
 struct uniform_buffer_object
@@ -24,6 +24,7 @@ struct uniform_buffer_object
     glm::mat4 model;
     glm::mat4 view;
     glm::mat4 proj;
+    glm::vec4 sun_dir_and_time;
 };
 
 namespace vertex_data_test
@@ -878,7 +879,7 @@ VkPipeline create_graphics_pipeline(
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f; // anything thicker than 1.0 requires a gpu feature wideLines
     rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE; 
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; 
     rasterizer.depthBiasEnable = VK_FALSE;
     // this stuff is used for shadow mapping. Not using it rn
     rasterizer.depthBiasConstantFactor = 0.0f;
@@ -1032,7 +1033,10 @@ void record_cmd_buffer(
     BufferView<VkFramebuffer> swapchain_framebuffers,
     VkPipeline graphics_pipeline,
     VkBuffer vertex_buffer,
-    VkBuffer index_buffer)
+    VkBuffer index_buffer,
+    VkPipelineLayout pipeline_layout,
+    BufferView<VkDescriptorSet> descriptor_sets,
+    u32 current_frame)
 {
     VkCommandBufferBeginInfo begin_info = {};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1077,6 +1081,8 @@ void record_cmd_buffer(
     VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(cmd_buffer, 0, 1, vertexBuffers, offsets);
     vkCmdBindIndexBuffer(cmd_buffer, index_buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindDescriptorSets(cmd_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                            pipeline_layout, 0, 1, &descriptor_sets.data[current_frame], 0, nullptr);
 
     vkCmdDrawIndexed(cmd_buffer, ARRAY_SIZE(vertex_data_test::indices), 1, 0, 0, 0);
 
@@ -1351,11 +1357,78 @@ void update_uniform_buffer(
     f32 time = std::chrono::duration<f32, std::chrono::seconds::period>(current_time - start_time).count();
     uniform_buffer_object ubo = {};
     // rotate around Z-axis w/time
-    ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    ubo.model = glm::rotate(glm::mat4(1.0f), glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
     ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
     ubo.proj = glm::perspective(glm::radians(45.0f), swapchain_extent.width / (f32)swapchain_extent.height, 0.1f, 10.0f);
     ubo.proj[1][1] *= -1; // glm designed for OpenGL where Y clip coords are inverted. Flip sign on scaling factor of Y axis for proper image
+    
+    glm::vec3 sundir = glm::vec3(0.5, 5.0, 0.0);
+    ubo.sun_dir_and_time = glm::vec4(sundir, time);
+    
     memcpy(uniform_buffers_mapped.data[current_img_idx], &ubo, sizeof(ubo));
+}
+
+VkDescriptorPool create_descriptor_pool(
+    VkDevice logical_device)
+{
+    VkDescriptorPoolSize poolsize = {};
+    poolsize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolsize.descriptorCount = MAX_FRAMES_IN_FLIGHT;
+    VkDescriptorPoolCreateInfo info = {};
+    info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    info.poolSizeCount = 1;
+    info.pPoolSizes = &poolsize;
+    info.maxSets = MAX_FRAMES_IN_FLIGHT;
+    info.flags = 0;
+    VkDescriptorPool pool = {};
+    VkResult result = vkCreateDescriptorPool(logical_device, &info, nullptr, &pool);
+    VK_CHECK(result);
+    return pool;
+}
+
+BufferView<VkDescriptorSet> create_descriptor_sets(
+    Arena* arena,
+    VkDevice logical_device,
+    VkDescriptorPool desc_pool,
+    VkDescriptorSetLayout layout,
+    const BufferView<VkBuffer>& uniform_buffers)
+{
+    // allocate descriptor sets
+    BufferView<VkDescriptorSetLayout> desc_set_layouts = {arena_alloc_type(arena, VkDescriptorSetLayout, MAX_FRAMES_IN_FLIGHT), MAX_FRAMES_IN_FLIGHT};
+    for(u32 i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    { // populate desc_set_layouts with the specified layout (yes, these copies of the layout are necessary)
+        TMEMCPY(&desc_set_layouts.data[i], &layout, sizeof(layout));
+    }
+    BufferView<VkDescriptorSet> descriptor_sets = BufferView<VkDescriptorSet>::init_from_arena(arena, MAX_FRAMES_IN_FLIGHT);
+    VkDescriptorSetAllocateInfo alloc_info = {};
+    alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    alloc_info.descriptorPool = desc_pool;
+    alloc_info.descriptorSetCount = MAX_FRAMES_IN_FLIGHT;
+    alloc_info.pSetLayouts = desc_set_layouts.data;
+    VkResult result = vkAllocateDescriptorSets(logical_device, &alloc_info, descriptor_sets.data);
+    VK_CHECK(result);
+
+    // configure descriptor sets
+    for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        VkDescriptorBufferInfo bufinfo = {};
+        bufinfo.buffer = uniform_buffers.data[i];
+        bufinfo.offset = 0;
+        bufinfo.range = sizeof(uniform_buffer_object);
+        VkWriteDescriptorSet descriptor_write = {};
+        descriptor_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptor_write.dstSet = descriptor_sets.data[i];
+        descriptor_write.dstBinding = 0; // same as in shader
+        descriptor_write.dstArrayElement = 0;
+        descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        descriptor_write.descriptorCount = 1;
+        descriptor_write.pBufferInfo = &bufinfo;
+        descriptor_write.pImageInfo = nullptr;
+        descriptor_write.pTexelBufferView = nullptr;
+        vkUpdateDescriptorSets(logical_device, 1, &descriptor_write, 0, nullptr);
+    }
+
+    return descriptor_sets;
 }
 
 RuntimeData initVulkan()
@@ -1393,6 +1466,8 @@ RuntimeData initVulkan()
     create_vertex_buffer(runtime.logical_device, runtime.physical_device, runtime.command_pool, runtime.graphics_queue, {vertex_data_test::vertices, ARRAY_SIZE(vertex_data_test::vertices)}, runtime.vertex_buffer, runtime.vertex_buffer_mem);
     create_index_buffer(runtime.logical_device, runtime.physical_device, runtime.command_pool, runtime.graphics_queue, {vertex_data_test::indices, ARRAY_SIZE(vertex_data_test::indices)}, runtime.index_buffer, runtime.index_buffer_mem);
     create_uniform_buffers(&arena, runtime.logical_device, runtime.physical_device, runtime.uniform_buffers, runtime.uniform_buffers_mem, runtime.uniform_buffers_mapped);
+    runtime.descriptor_pool = create_descriptor_pool(runtime.logical_device);
+    runtime.descriptor_sets = create_descriptor_sets(&arena, runtime.logical_device, runtime.descriptor_pool, runtime.descriptor_set_layout, runtime.uniform_buffers);
 
     LOG_INFO("Vulkan initialization complete. Arena %i / %i bytes", arena.offset, arena.backing_mem_size);
     return runtime;
@@ -1468,7 +1543,10 @@ void vulkanMainLoop(RuntimeData& runtime)
                         runtime.swapchain_framebuffers, 
                         runtime.graphics_pipeline, 
                         runtime.vertex_buffer,
-                        runtime.index_buffer);
+                        runtime.index_buffer,
+                        runtime.pipline_layout,
+                        runtime.descriptor_sets,
+                        runtime.current_frame);
     update_uniform_buffer(runtime.current_frame, runtime.swapchain_info.extent, runtime.uniform_buffers_mapped);
 
     // submitting the recorded command buffer
@@ -1529,6 +1607,7 @@ void vulkanCleanup(RuntimeData& runtime)
         vkDestroyBuffer(runtime.logical_device, runtime.uniform_buffers.data[i], nullptr);
         vkFreeMemory(runtime.logical_device, runtime.uniform_buffers_mem.data[i], nullptr);
     }
+    vkDestroyDescriptorPool(runtime.logical_device, runtime.descriptor_pool, nullptr);
     vkDestroyDescriptorSetLayout(runtime.logical_device, runtime.descriptor_set_layout, nullptr);
     vkDestroyBuffer(runtime.logical_device, runtime.vertex_buffer, nullptr);
     vkFreeMemory(runtime.logical_device, runtime.vertex_buffer_mem, nullptr);
