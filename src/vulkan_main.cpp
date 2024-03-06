@@ -29,16 +29,17 @@ struct uniform_buffer_object
 
 namespace vertex_data_test
 {
+constexpr f32 rect = 1.0f;
 Vertex vertices[] = 
 {
-    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
-    {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
+    {{rect,  rect}, {1.0f, -1.0f}, {1.0f, 0.0f, 0.0f}}, // tr
+    {{rect, -rect}, {1.0f, 1.0f}, {0.0f, 1.0f, 0.0f}}, // br
+    {{-rect, -rect}, {-1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}}, // bl
+    {{-rect,  rect}, {-1.0f, -1.0f}, {0.0f, 0.0f, 0.0f}}, // tl
 };
 u32 indices[] = 
 {
-    0, 1, 2, 2, 3, 0
+    0, 1, 3, 1, 2, 3
 };
 }
 
@@ -820,7 +821,7 @@ VkPipeline create_graphics_pipeline(
 
     // Vertex Input
     VkVertexInputBindingDescription binding_descrip = Vertex::get_binding_description();
-    std::array<VkVertexInputAttributeDescription, 2> attributes_descrip = Vertex::get_attribute_descriptions();
+    auto attributes_descrip = Vertex::get_attribute_descriptions();
     VkPipelineVertexInputStateCreateInfo vertex_input_info = {};
     vertex_input_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertex_input_info.vertexBindingDescriptionCount = 1;
@@ -1314,7 +1315,7 @@ VkDescriptorSetLayout create_descriptor_set_layout(
     ubo_layout_bind.binding = 0; // in shader
     ubo_layout_bind.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     ubo_layout_bind.descriptorCount = 1;
-    ubo_layout_bind.stageFlags = VK_SHADER_STAGE_VERTEX_BIT; // can also specify ALL_GRAPHICS to have it accessible everywhere
+    ubo_layout_bind.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT; // can also specify ALL_GRAPHICS to have it accessible everywhere
     ubo_layout_bind.pImmutableSamplers = nullptr; // relevant for image sampling
     VkDescriptorSetLayoutCreateInfo layout_info = {};
     layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1362,7 +1363,7 @@ void update_uniform_buffer(
     ubo.proj = glm::perspective(glm::radians(45.0f), swapchain_extent.width / (f32)swapchain_extent.height, 0.1f, 10.0f);
     ubo.proj[1][1] *= -1; // glm designed for OpenGL where Y clip coords are inverted. Flip sign on scaling factor of Y axis for proper image
     
-    glm::vec3 sundir = glm::vec3(0.5, 5.0, 0.0);
+    glm::vec3 sundir = glm::normalize(glm::vec3(1.0, 0.0, 0.0));
     ubo.sun_dir_and_time = glm::vec4(sundir, time);
     
     memcpy(uniform_buffers_mapped.data[current_img_idx], &ubo, sizeof(ubo));

@@ -26,6 +26,7 @@ constexpr u32 MAX_FRAMES_IN_FLIGHT = 2;
 struct Vertex
 {
     glm::vec2 pos;
+    glm::vec2 uv;
     glm::vec3 color;
     static VkVertexInputBindingDescription get_binding_description()
     {
@@ -35,18 +36,22 @@ struct Vertex
         description.inputRate = VK_VERTEX_INPUT_RATE_VERTEX; // move to next entry after each vertex or after each instance
         return description;
     }
-    static std::array<VkVertexInputAttributeDescription, 2> get_attribute_descriptions()
+    static std::array<VkVertexInputAttributeDescription, 3> get_attribute_descriptions()
     {
         // An attribute description struct describes how to extract a vertex attribute from a chunk of vertex data originating from a binding description
-        std::array<VkVertexInputAttributeDescription, 2> descriptions = {};
+        std::array<VkVertexInputAttributeDescription, 3> descriptions = {};
         descriptions[0].binding = 0;
         descriptions[0].location = 0; // same as in vert shader
         descriptions[0].format = VK_FORMAT_R32G32_SFLOAT; // means vec2
         descriptions[0].offset = offsetof(Vertex, pos);
         descriptions[1].binding = 0;
         descriptions[1].location = 1; // same as vert shader
-        descriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-        descriptions[1].offset = offsetof(Vertex, color);
+        descriptions[1].format = VK_FORMAT_R32G32_SFLOAT;
+        descriptions[1].offset = offsetof(Vertex, uv);
+        descriptions[2].binding = 0;
+        descriptions[2].location = 2; // same as vert shader
+        descriptions[2].format = VK_FORMAT_R32G32B32_SFLOAT;
+        descriptions[2].offset = offsetof(Vertex, color);
         return descriptions;
     }
 };
