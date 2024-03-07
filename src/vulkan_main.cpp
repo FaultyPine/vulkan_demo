@@ -25,6 +25,7 @@ struct uniform_buffer_object
     glm::mat4 view;
     glm::mat4 proj;
     glm::vec4 sun_dir_and_time;
+    glm::vec4 resolution;
 };
 
 namespace vertex_data_test
@@ -1365,7 +1366,10 @@ void update_uniform_buffer(
     
     glm::vec3 sundir = glm::normalize(glm::vec3(1.0, 0.0, 0.0));
     ubo.sun_dir_and_time = glm::vec4(sundir, time);
-    
+    s32 width, height;
+    glfwGetWindowSize(glob_glfw_window, &width, &height);
+    ubo.resolution = glm::vec4((f32)width, (f32)height, 0.0, 0.0);
+
     memcpy(uniform_buffers_mapped.data[current_img_idx], &ubo, sizeof(ubo));
 }
 
