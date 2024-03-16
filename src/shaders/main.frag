@@ -84,24 +84,54 @@ mat2 rotate2D(float a)
     return mat2(ca, -sa, sa, ca);
 }
 
+mat3 rotate3DX(float angle)
+{
+    float c = cos(angle);
+    float s = sin(angle);
+    return mat3(1,  0, 0,
+                0,  c, -s,
+                0,  s, c);
+}
+
+mat3 rotate3DY(float angle)
+{
+    float c = cos(angle);
+    float s = sin(angle);
+    return mat3(c,  0,  s,
+                0,  1,  0,
+                -s, 0,  c);
+}
+
+mat3 rotate3DZ(float angle)
+{
+    float c = cos(angle);
+    float s = sin(angle);
+    return mat3(c, -s, 0,
+                s, c,  0,
+                0, 0,  1);
+}
+
 vec3 repeat(vec3 p, float c) 
 {
     return mod(p,c) - 0.5 * c; // (0.5 *c centers the tiling around the origin)
 }
 
-float fbm(vec2 p) 
+
+float fbm(vec3 p) 
 {
     float res = 0.0;
     float amp = 0.8;
     float freq = 1.5;
     for(int i = 0; i < 12; i++) {
-        res += amp * noise(vec3(p * 0.8, 0.0));
+        res += amp * noise(p * 0.8);
         amp *= 0.5;
         freq *= 1.05;
-        p = p * freq * rotate2D(PI / 4.0);
+        p = p * freq * rotate3DZ(PI / 4.0);
     }
     return res;
 }
+
+
 
 float sdfBox(vec3 p, vec3 b) 
 {
@@ -114,20 +144,72 @@ float sdfSphere(vec3 p, float radius)
     return length(p) - radius;
 }
 
+float cloudDensitySample(vec3 point)
+{
+    // modulate radius to look like cloudys
+    return SURF_EPSILON - length(point) * 0.05 + fbm(point * 0.3) * 0.8;
+    // if this is > 0 that means we're in the volume with some density
+}
+
+vec3 cloud_march(vec3 rayOrigin, vec3 rayDirection)
+{
+    float time = gettime();
+    float transmittance = 1.0;
+    float absorption = 100.0;
+    vec3 sun_direction = ubo.sun_dir_and_time.xyz;
+    
+    vec3 cloudCamOffset = vec3(0, 0, 25);
+    rayOrigin += cloudCamOffset;
+
+    const int cloudSampleCount = 64;
+    const float zMax = 40.0; // max distance to step
+    // dividing the max distance our ray can go into discrete MAX_STEPS number of steps
+    // zStep is how far each of those steps is
+    float zStep = zMax / float(cloudSampleCount);
+
+    vec3 color = vec3(0);
+    vec3 point = rayOrigin;
+    for (int i = 0; i < cloudSampleCount; i++)
+    {
+        float densitySample = cloudDensitySample(point);
+        if (densitySample > 0.0)
+        {
+            // we are in the volume & have some density here
+            // TODO: RESEARCH THIS. IDK WHATS GOING ON HERE
+            float tmp = densitySample / float(cloudSampleCount); // ????
+            transmittance *= 1.0 - (tmp * absorption); // ???
+            // ----------------------------------------
+            if (transmittance <= 0.01)
+            {
+                // ray has been absorbed by the cloud
+                break;
+            }
+            float opacity = 50.0;
+            float k = opacity * tmp * transmittance;
+            vec3 cloudColor = vec3(1.0);
+            vec3 col1 = cloudColor * k;
+            color += col1;
+        }
+        point += rayDirection * zStep;
+    }
+
+    return color;
+}
+
 // NOTE: to self, to translate you must move in the *opposite* direction to the desired position
 // imagine yourself as a point in a raymarched scene with a sphere: if you take 2 steps to the right, the sphere will appear to you two steps further to the left
 // scaling is also odd.  
-float scene(vec3 p)
+float scene(vec3 point)
 {
-    float fbm = fbm(p.xz);
+    float fbm = fbm(point);
     float time = gettime();
-    vec3 spherepoint = p + vec3(sin(time), cos(time), sin(time));
-    float sphere = sdfSphere(spherepoint, 1.0);
-    float noise = fbm * (1/length(p));
-    float plane = p.y + 1.0 + noise;
+    vec3 boxpoint = (point + vec3(2, -1.0, 3.0)) * rotate3DY(PI / 4.0 + sin(time));
+    float box = sdfBox(boxpoint, vec3(1.0));
+    float noise = fbm * (1/length(point));
+    float plane = point.y + 1.0 + noise;
 
-    float distance = min(sphere, plane);
-    return distance;
+    float distance = min(box, plane);
+    return plane;
 }
 
 // courtesey of IQ
@@ -160,11 +242,10 @@ vec3 getNormal(in vec3 p)
 float raymarch(vec3 rayOrigin, vec3 rayDirection)
 {
     float dO = 0.0;
-    vec3 color = vec3(0.0);
     for (int i = 0; i < MAX_STEPS; i++)
     {
-        vec3 p = rayOrigin + (rayDirection * dO);
-        float distanceToSurface = scene(p);
+        vec3 point = rayOrigin + (rayDirection * dO);
+        float distanceToSurface = scene(point);
         dO += distanceToSurface;
         if (dO > MAX_DIST || distanceToSurface < SURF_EPSILON)
         { // if we've gone too far or have hit a surface
@@ -178,24 +259,29 @@ float raymarch(vec3 rayOrigin, vec3 rayDirection)
 vec4 cloud_main(vec2 uv, float time, vec2 resolution)
 {
     // raymarching setup
-    vec3 rayOrigin = vec3(0, 0, 5.0); // camera
+    vec3 rayOrigin = vec3(0 + sin(time), 0 + cos(time), 5.0); // camera
+    // TODO: orbit camera around center
     // rays in every direction on the screen along the negative z axis
-    vec3 rayDirection = normalize(vec3(uv, -1.0)); 
+    vec3 rayDirection = normalize(vec3(uv, -1.3)); 
     float distToSurf = raymarch(rayOrigin, rayDirection);
-
+    vec3 lightPos = vec3(-10.0, 10.0, 10.0); // sun pos
+    vec3 pointOnSurface = rayOrigin + (rayDirection * distToSurf);
+    vec3 lightDir = normalize(lightPos - pointOnSurface);
     vec3 color = vec3(0.0);
-    if (distToSurf < MAX_DIST)
+
+    #if 0
+    if (distToSurf < MAX_DIST) // if we ended up hitting a surface
     {
-        vec3 pointOnSurface = rayOrigin + (rayDirection * distToSurf);
-        vec3 lightPos = vec3(-10.0, 10.0, 10.0); // sun pos
         vec3 normal = getNormal(pointOnSurface);
-        vec3 lightDir = normalize(lightPos - pointOnSurface);
         float diffuse = max(dot(normal, lightDir), 0.0);
         vec3 ambient = vec3(0.01);
         // cast a ray from the surface point toward the light direction. Intersection = in shadow, no intersection = in light
         float shadows = softShadows(pointOnSurface, lightDir, 0.1, 5.0, 64.0);
         color = vec3(1.0) * (diffuse + ambient) * shadows;
     }
+    #endif
+    vec3 cloud = cloud_march(rayOrigin, rayDirection);
+    color += cloud;
 
     return vec4(color, 1.0);
 }
@@ -214,19 +300,17 @@ vec4 cloud_main(vec2 uv, float time, vec2 resolution)
 
 #else // CLOUD_PREMADE
 
-#define USE_LIGHT 1
+#define USE_LIGHT 0
 
 mat3 m = mat3( 0.00,  0.80,  0.60,
               -0.80,  0.36, -0.48,
               -0.60, -0.48,  0.64);
 
-///
 /// Fractal Brownian motion.
 ///
 /// Refer to:
 /// EN: https://thebookofshaders.com/13/
 /// JP: https://thebookofshaders.com/13/?lan=jp
-///
 float fbm(vec3 p)
 {
     float f;
@@ -248,14 +332,11 @@ float fbm(vec3 p)
 ///
 /// Because this function is used for density.
 ///
-float sampleDensity(in vec3 pos)
-{
-    return 0.1 - length(pos) * 0.05 + fbm(pos * 0.3);
-}
 
+// GRAYSON: returning the density at the given point. Positive values = more dense, <=0 means no density at that point / outside the volume
 float scene(in vec3 pos)
 {
-    return sampleDensity(pos);
+    return 0.1 - length(pos) * 0.05 + fbm(pos * 0.3);
 }
 
 
@@ -343,11 +424,13 @@ vec4 cloud_main(vec2 uv, float time)
         {
             // Let's start cloud ray marching!
             
+            // TODO: don't get this part....
+
             // why density sub by sampleCount?
-            // This mean integral for each sampling points.
+            // This mean integral for each sampling points. ?????
             float tmp = density / float(sampleCount);
             
-            T *= 1.0 - (tmp * absorption);
+            T *= 1.0 - (tmp * absorption); // ???/
             
             // Return if transmittance under 0.01. 
             // Because the ray is almost absorbed.
@@ -356,38 +439,43 @@ vec4 cloud_main(vec2 uv, float time)
                 break;
             }
             
-            #if USE_LIGHT == 1
-            // Light scattering
-            
             // Transmittance for Light
             float Tl = 1.0;
-            
-            // Start light scattering with raymarching.
-            
-            // Raymarching position for the light.
-            vec3 lp = p;
-            
-            // Iteration of sampling light.
-            for (int j = 0; j < sampleLightCount; j++)
-            {
-                float densityLight = scene(lp);
+            { // lighting
+                #if USE_LIGHT == 1
+                // Light scattering
                 
-                // If densityLight is over 0.0, the ray is stil in the cloud.
-                if (densityLight > 0.0)
+                
+                // Start light scattering with raymarching.
+                
+                // Raymarching position for the light.
+                vec3 lp = p;
+                
+                // as we step through the cloud volume to sample density points
+                // AT EACH STEP we also step towards the light source
+                // taking multiple samples of density along that ray as well
+                // we can get a seperate light-transmittence value associated with a specific density point
+                for (int j = 0; j < sampleLightCount; j++)
                 {
-                    float tmpl = densityLight / float(sampleCount);
-                    Tl *= 1.0 - (tmpl * absorption);
+                    float densityLight = scene(lp);
+                    
+                    // If densityLight is over 0.0, the ray is stil in the cloud.
+                    if (densityLight > 0.0)
+                    {
+                        float tmpl = densityLight / float(sampleCount);
+                        Tl *= 1.0 - (tmpl * absorption);
+                    }
+                    
+                    if (Tl <= 0.01)
+                    {
+                        break;
+                    }
+                    
+                    // Step to next position.
+                    lp += sun_direction * zstepl;
                 }
-                
-                if (Tl <= 0.01)
-                {
-                    break;
-                }
-                
-                // Step to next position.
-                lp += sun_direction * zstepl;
+                #endif
             }
-            #endif
             
             // Add ambient + light scattering color
             float opaity = 50.0;
