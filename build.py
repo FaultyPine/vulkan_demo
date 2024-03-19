@@ -29,7 +29,7 @@ def get_compiler_args_clang():
     # NOTE: the -D_DLL flag seems be the (a?) key to dynamically linking CRT. Maybe some windows header has a gaurd on a pragma link?
 
     to_root = "."
-    include_root_paths = ["", "external", "src"]
+    include_root_paths = ["", "external", "external/imgui", "src"]
     include_paths = include_paths_str(to_root, include_root_paths)
     return clean_string(f"""
         -g -O0 -std=c++17 {build_common_compiler_args()} {include_paths} {cpp_ver_arg()}

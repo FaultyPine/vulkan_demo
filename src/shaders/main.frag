@@ -1,11 +1,19 @@
 #version 450
 
+struct CloudData 
+{
+    vec4 cameraOffset;
+    //     ( pointMagnitudeScalar, cloudDensityNoiseScalar, cloudDensityNoiseFreq, cloudDensityPointLengthFreq )
+    vec4 cloudDensityParams;
+    vec4 sun_dir_and_time;
+};
+
 layout(binding = 0) uniform uniform_buffer_obj {
     mat4 model;
     mat4 view;
     mat4 proj;
-    vec4 sun_dir_and_time;
     vec4 resolution;
+    CloudData cloud;
 } ubo;
 
 layout(location = 0) out vec4 outColor;
@@ -44,12 +52,16 @@ float noise(in vec3 x)
 
 float gettime()
 {
-    return ubo.sun_dir_and_time.w;
+    return ubo.cloud.sun_dir_and_time.w;
+}
+vec3 get_sun_dir()
+{
+    return normalize(ubo.cloud.sun_dir_and_time.xyz);
 }
 
 void main() 
 {
-    float time = ubo.sun_dir_and_time.w;
+    float time = gettime();
     vec2 resolution = ubo.resolution.xy;
     vec2 uv = gl_FragCoord.xy / resolution;
     uv.y = 1.0 - uv.y; // vulkan doesn't flip - opengl does. pretending to be opengl rn
@@ -73,9 +85,9 @@ void main()
 
 #ifndef CLOUD_PREMADE
 
-#define MAX_STEPS 50
+#define MAX_STEPS 100
 #define SURF_EPSILON 0.001
-#define MAX_DIST 100.0
+#define MAX_DIST 200.0
 
 mat2 rotate2D(float a) 
 {
@@ -116,6 +128,10 @@ vec3 repeat(vec3 p, float c)
     return mod(p,c) - 0.5 * c; // (0.5 *c centers the tiling around the origin)
 }
 
+float remap(float value, float min1, float max1, float min2, float max2) 
+{
+    return min2 + (value - min1) * (max2 - min2) / (max1 - min1);
+}
 
 float fbm(vec3 p) 
 {
@@ -135,8 +151,8 @@ float fbm(vec3 p)
 
 float sdfBox(vec3 p, vec3 b) 
 {
-  vec3 q = abs(p) - b;
-  return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+    vec3 q = abs(p) - b;
+    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
 }
 
 float sdfSphere(vec3 p, float radius)
@@ -146,26 +162,29 @@ float sdfSphere(vec3 p, float radius)
 
 float cloudDensitySample(vec3 point)
 {
-    // modulate radius to look like cloudys
-    return SURF_EPSILON - length(point) * 0.05 + fbm(point * 0.3) * 0.8;
-    // if this is > 0 that means we're in the volume with some density
+    float timescroll = gettime() * 0.3;
+    float pointMagnitudeScalar = ubo.cloud.cloudDensityParams.x;
+    float cloudDensityNoiseScalar = ubo.cloud.cloudDensityParams.y;
+    float cloudDensityNoiseFreq = ubo.cloud.cloudDensityParams.z;
+    float cloudDensityPointLengthFreq = ubo.cloud.cloudDensityParams.w;
+    // this is generally a sphere shape. Note the similarity to sdfSphere
+    // except here we modulate some of the calculations and use fractal brownian motion for our "sphere" radius
+    // need to invert some operations though since we aren't measuring distance to a surface
+    // we are returning the *density* at some point which is positive in our shape, and <= 0 outside the shape
+    point.y -= 10.0;
+    return SURF_EPSILON - length(point * cloudDensityPointLengthFreq) * pointMagnitudeScalar + fbm(point * cloudDensityNoiseFreq + timescroll) * cloudDensityNoiseScalar;
 }
 
-vec3 cloud_march(vec3 rayOrigin, vec3 rayDirection)
+vec3 cloud_march(vec3 rayOrigin, vec3 rayDirection, float sceneDepth, vec3 lightDir, vec3 lightPos)
 {
     float time = gettime();
     float transmittance = 1.0;
     float absorption = 100.0;
-    vec3 sun_direction = ubo.sun_dir_and_time.xyz;
-    
-    vec3 cloudCamOffset = vec3(0, 0, 25);
-    rayOrigin += cloudCamOffset;
 
     const int cloudSampleCount = 64;
-    const float zMax = 40.0; // max distance to step
     // dividing the max distance our ray can go into discrete MAX_STEPS number of steps
     // zStep is how far each of those steps is
-    float zStep = zMax / float(cloudSampleCount);
+    float zStep = MAX_DIST / float(cloudSampleCount);
 
     vec3 color = vec3(0);
     vec3 point = rayOrigin;
@@ -190,7 +209,8 @@ vec3 cloud_march(vec3 rayOrigin, vec3 rayDirection)
             vec3 col1 = cloudColor * k;
             color += col1;
         }
-        point += rayDirection * zStep;
+        point += rayDirection * zStep; // step forward through the ray
+        if (length(point) >= sceneDepth) break; // depth test
     }
 
     return color;
@@ -203,30 +223,35 @@ float scene(vec3 point)
 {
     float fbm = fbm(point);
     float time = gettime();
-    vec3 boxpoint = (point + vec3(2, -1.0, 3.0)) * rotate3DY(PI / 4.0 + sin(time));
-    float box = sdfBox(boxpoint, vec3(1.0));
+    float obj1 = sdfSphere(vec3(point) + vec3(10,0,0)*sin(time), 1.0);
     float noise = fbm * (1/length(point));
     float plane = point.y + 1.0 + noise;
+    float sun = sdfSphere(vec3(point) + get_sun_dir()*10, 1.0);
 
-    float distance = min(box, plane);
-    return plane;
+    float distance = min(obj1, plane);
+    //distance = min(distance, sun);
+    return distance;
 }
 
 // courtesey of IQ
 // idea is to cast a ray from a point on a surface toward the light dir
 // and take steps through the scene to see if we intersect anything
 // if we do intersect, we are in shadow.
-float softShadows(vec3 ro, vec3 rd, float mint, float maxt, float k ) {
-  float resultingShadowColor = 1.0;
-  float t = mint;
-  for(int i = 0; i < 50 && t < maxt; i++) {
-      float h = scene(ro + rd*t);
-      if( h < 0.001 )
-          return 0.0;
-      resultingShadowColor = min(resultingShadowColor, k*h/t );
-      t += h;
-  }
-  return resultingShadowColor ;
+float softShadows(vec3 ro, vec3 rd, float mint, float maxt, float k) 
+{
+    float resultingShadowColor = 1.0;
+    float t = mint;
+    for (int i = 0; i < 50 && t < maxt; i++) 
+    {
+        float h = scene(ro + rd*t);
+        if(h < 0.001)
+        {
+            return 0.0;
+        }
+        resultingShadowColor = min(resultingShadowColor, k*h/t );
+        t += h;
+    }
+    return resultingShadowColor ;
 }
 
 vec3 getNormal(in vec3 p) 
@@ -256,31 +281,51 @@ float raymarch(vec3 rayOrigin, vec3 rayDirection)
 }
 
 
+// lookAt
+mat3 camera(vec3 rayOrigin, vec3 target)
+{
+    vec3 cw = normalize(rayOrigin - target);
+    vec3 cp = vec3(0.0, 1.0, 0.0);
+    vec3 cu = cross(cw, cp);
+    vec3 cv = cross(cu, cw);
+    return mat3(cu, cv, cw);
+}
+
 vec4 cloud_main(vec2 uv, float time, vec2 resolution)
 {
     // raymarching setup
-    vec3 rayOrigin = vec3(0 + sin(time), 0 + cos(time), 5.0); // camera
-    // TODO: orbit camera around center
+    vec3 rayOrigin = vec3(0, 0, 5.0); // camera
+    rayOrigin += ubo.cloud.cameraOffset.xyz;
     // rays in every direction on the screen along the negative z axis
-    vec3 rayDirection = normalize(vec3(uv, -1.3)); 
+    vec3 cameraTarget = vec3(0,1,0);
+    mat3 cam = camera(rayOrigin, cameraTarget);
+    vec3 rayDirection = normalize(cam * normalize(vec3(uv, -1.0)));
+    // TODO: orbit camera around center
+    //vec3 rayDirection = normalize(-rayOrigin);
+    //rayDirection.xy += uv;
+    //rayDirection = normalize(rayDirection);
+
     float distToSurf = raymarch(rayOrigin, rayDirection);
-    vec3 lightPos = vec3(-10.0, 10.0, 10.0); // sun pos
+    float lightDist = 30;
     vec3 pointOnSurface = rayOrigin + (rayDirection * distToSurf);
-    vec3 lightDir = normalize(lightPos - pointOnSurface);
+    //vec3 lightDir = normalize(lightPos - pointOnSurface);
+    vec3 lightDir = get_sun_dir();
+    vec3 lightPos = lightDist * -lightDir;
     vec3 color = vec3(0.0);
 
-    #if 0
     if (distToSurf < MAX_DIST) // if we ended up hitting a surface
     {
         vec3 normal = getNormal(pointOnSurface);
-        float diffuse = max(dot(normal, lightDir), 0.0);
+        float lightRadius = 70.0;
+        float attenuation = 1.0-remap(min(lightRadius, length(lightPos - pointOnSurface)), 0, lightRadius, 0, 1);
+        float diffuse = max(dot(normal, lightDir), 0.0) * attenuation;
         vec3 ambient = vec3(0.01);
         // cast a ray from the surface point toward the light direction. Intersection = in shadow, no intersection = in light
         float shadows = softShadows(pointOnSurface, lightDir, 0.1, 5.0, 64.0);
-        color = vec3(1.0) * (diffuse + ambient) * shadows;
+        color = (diffuse + ambient) * shadows;
     }
-    #endif
-    vec3 cloud = cloud_march(rayOrigin, rayDirection);
+
+    vec3 cloud = cloud_march(rayOrigin, rayDirection, distToSurf, lightDir, lightPos);
     color += cloud;
 
     return vec4(color, 1.0);

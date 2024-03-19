@@ -4,7 +4,12 @@
 #include "tiny/tiny_mem.h"
 #include "tiny/tiny_arena.h"
 
-#include <optional>
+
+#define IMGUI_IMPLEMENTATION
+#include "external/imgui/misc/single_file/imgui_single_file.h"
+#include "external/imgui/backends/imgui_impl_glfw.cpp"
+#include "external/imgui/backends/imgui_impl_vulkan.cpp"
+
 #include <set>
 #include <string.h>
 #include <fstream>
@@ -24,8 +29,8 @@ struct uniform_buffer_object
     glm::mat4 model;
     glm::mat4 view;
     glm::mat4 proj;
-    glm::vec4 sun_dir_and_time;
     glm::vec4 resolution;
+    alignas(16) CloudData cloud = {};
 };
 
 namespace vertex_data_test
@@ -198,6 +203,80 @@ const char** get_required_instance_extensions(Arena* arena, u32& num_required_ex
     return extension_names;
 }
 
+/// ===== IMGUI
+
+void init_imgui(RuntimeData& runtime)
+{
+    //1: create descriptor pool for IMGUI
+	// the size of the pool is very oversize, but it's copied from imgui demo itself.
+	VkDescriptorPoolSize pool_sizes[] =
+	{
+		{ VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000 },
+		{ VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000 }
+	};
+
+	VkDescriptorPoolCreateInfo pool_info = {};
+	pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+	pool_info.maxSets = 1000;
+	pool_info.poolSizeCount = std::size(pool_sizes);
+	pool_info.pPoolSizes = pool_sizes;
+
+	VkDescriptorPool imguiPool;
+	vkCreateDescriptorPool(runtime.logical_device, &pool_info, nullptr, &imguiPool);
+    runtime.imgui_pool = imguiPool;
+
+	// 2: initialize imgui library
+
+	//this initializes the core structures of imgui
+	ImGui::CreateContext();
+
+	//this initializes imgui for glfw
+    ImGui_ImplGlfw_InitForVulkan(glob_glfw_window, true);
+	//this initializes imgui for Vulkan
+    ImGui_ImplVulkan_InitInfo init_info = {};
+    init_info.Instance = runtime.instance;
+    init_info.PhysicalDevice = runtime.physical_device;
+    init_info.Device = runtime.logical_device;
+    init_info.QueueFamily = runtime.indices.graphics_family.value();
+    init_info.Queue = runtime.graphics_queue;
+    init_info.PipelineCache = VK_NULL_HANDLE;
+    init_info.DescriptorPool = imguiPool;
+    init_info.RenderPass = runtime.render_pass;
+    init_info.Subpass = 0;
+    init_info.MinImageCount = 3;
+    init_info.ImageCount = 3;
+    init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    ImGui_ImplVulkan_Init(&init_info);
+}
+
+void imgui_tick(RuntimeData& runtime)
+{
+    ImGui_ImplVulkan_NewFrame();
+	ImGui_ImplGlfw_NewFrame();
+	ImGui::NewFrame();
+    // ----------------
+    ImGui::DragFloat3("Sun dir", &runtime.cloud.sun_dir_and_time.x, 0.1f);
+    runtime.cloud.sun_dir_and_time = glm::vec4(glm::normalize(glm::vec3(runtime.cloud.sun_dir_and_time)), runtime.cloud.sun_dir_and_time.w);
+    ImGui::DragFloat("Point magnitude scalar", &runtime.cloud.cloudDensityParams.x, 0.001f);
+    ImGui::DragFloat("Cloud density noise scalar", &runtime.cloud.cloudDensityParams.y, 0.01f);
+    ImGui::DragFloat("Cloud density noise freq", &runtime.cloud.cloudDensityParams.z, 0.01f);
+    ImGui::DragFloat("Cloud density point length freq", &runtime.cloud.cloudDensityParams.w, 0.01f);
+    // ---------------------
+    ImGui::Render();
+}
+
+// ====== END IMGUI
+
 bool checkValidationLayerSupport(Arena* arena)
 {
     bool result = true;
@@ -296,18 +375,6 @@ VkInstance createInstance(Arena* arena)
     return instance;
 }
 
-
-struct QueueFamilyIndices 
-{
-    std::optional<u32> graphics_family = {};
-    std::optional<u32> present_family = {};
-    bool is_complete()
-    {
-        // check if all values have been filled
-        return graphics_family.has_value() && 
-            present_family.has_value();
-    }
-};
 
 QueueFamilyIndices find_queue_families(
     Arena* arena, 
@@ -503,6 +570,7 @@ SwapchainInfo create_swapchain(
     swapchain_info.extent = extent;
     swapchain_info.image_format = surface_format.format;
     swapchain_info.swapchain_images = swapchain_images_buffer;
+    swapchain_info.image_count = image_count;
 
     return swapchain_info;
 }
@@ -1088,6 +1156,8 @@ void record_cmd_buffer(
 
     vkCmdDrawIndexed(cmd_buffer, ARRAY_SIZE(vertex_data_test::indices), 1, 0, 0, 0);
 
+    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd_buffer);
+
     vkCmdEndRenderPass(cmd_buffer);
     result = vkEndCommandBuffer(cmd_buffer);
     VK_CHECK(result);
@@ -1352,7 +1422,8 @@ void create_uniform_buffers(
 void update_uniform_buffer(
     u32 current_img_idx,
     VkExtent2D swapchain_extent,
-    BufferView<void*> uniform_buffers_mapped)
+    BufferView<void*> uniform_buffers_mapped,
+    const RuntimeData& runtime)
 {
     static auto start_time = std::chrono::high_resolution_clock::now(); // start time of program
     auto current_time = std::chrono::high_resolution_clock::now();
@@ -1364,11 +1435,14 @@ void update_uniform_buffer(
     ubo.proj = glm::perspective(glm::radians(45.0f), swapchain_extent.width / (f32)swapchain_extent.height, 0.1f, 10.0f);
     ubo.proj[1][1] *= -1; // glm designed for OpenGL where Y clip coords are inverted. Flip sign on scaling factor of Y axis for proper image
     
-    glm::vec3 sundir = glm::normalize(glm::vec3(1.0, 0.0, 0.0));
-    ubo.sun_dir_and_time = glm::vec4(sundir, time);
     s32 width, height;
     glfwGetWindowSize(glob_glfw_window, &width, &height);
     ubo.resolution = glm::vec4((f32)width, (f32)height, 0.0, 0.0);
+
+    CloudData cloud = runtime.cloud;
+    f32 scalar = sin(glfwGetTime()) * 0.001;
+    cloud.cloudDensityParams += scalar;
+    ubo.cloud = cloud;
 
     memcpy(uniform_buffers_mapped.data[current_img_idx], &ubo, sizeof(ubo));
 }
@@ -1437,7 +1511,7 @@ BufferView<VkDescriptorSet> create_descriptor_sets(
 }
 
 RuntimeData initVulkan()
-{
+{    
     const u32 program_max_mem = MEGABYTES_BYTES(2);
     void* program_mem = TSYSALLOC(program_max_mem);
     RuntimeData runtime;
@@ -1451,6 +1525,7 @@ RuntimeData initVulkan()
     runtime.physical_device = find_physical_device(&arena, runtime.instance, runtime.surface);
     runtime.logical_device = create_logical_device(&arena, runtime.instance, runtime.physical_device, runtime.surface);
     QueueFamilyIndices indices = find_queue_families(&arena, runtime.physical_device, runtime.surface);
+    runtime.indices = indices;
     vkGetDeviceQueue(runtime.logical_device, indices.graphics_family.value(), 0, &runtime.graphics_queue);
     vkGetDeviceQueue(runtime.logical_device, indices.present_family.value(), 0, &runtime.present_queue);
     
@@ -1475,6 +1550,7 @@ RuntimeData initVulkan()
     runtime.descriptor_sets = create_descriptor_sets(&arena, runtime.logical_device, runtime.descriptor_pool, runtime.descriptor_set_layout, runtime.uniform_buffers);
 
     LOG_INFO("Vulkan initialization complete. Arena %i / %i bytes", arena.offset, arena.backing_mem_size);
+    init_imgui(runtime);
     return runtime;
 }
 
@@ -1513,9 +1589,10 @@ void recreate_swapchain(RuntimeData& runtime)
     // like if you drag the window from a standard monitor to a high DPI monitor. In that case we'd need to recreate the render pass
 }
 
-// draws a frame
-void vulkanMainLoop(RuntimeData& runtime)
+void render(RuntimeData& runtime)
 {
+    imgui_tick(runtime);
+
     u32& current_frame = runtime.current_frame;
     // wait until previous frame is finished drawing
     vkWaitForFences(runtime.logical_device, 1, &runtime.inflight_fences.data[current_frame], VK_TRUE, UINT64_MAX);
@@ -1552,7 +1629,7 @@ void vulkanMainLoop(RuntimeData& runtime)
                         runtime.pipline_layout,
                         runtime.descriptor_sets,
                         runtime.current_frame);
-    update_uniform_buffer(runtime.current_frame, runtime.swapchain_info.extent, runtime.uniform_buffers_mapped);
+    update_uniform_buffer(runtime.current_frame, runtime.swapchain_info.extent, runtime.uniform_buffers_mapped, runtime);
 
     // submitting the recorded command buffer
     VkSubmitInfo submit_info = {};
@@ -1588,7 +1665,49 @@ void vulkanMainLoop(RuntimeData& runtime)
         runtime.framebufferWasResized = false;
         recreate_swapchain(runtime);
     }
-    current_frame = (current_frame+1) % MAX_FRAMES_IN_FLIGHT;
+}
+
+void tick(RuntimeData& runtime)
+{
+    glm::vec3 input_dir = glm::vec3(0);
+    if (glfwGetKey(glob_glfw_window, GLFW_KEY_W) == GLFW_PRESS)
+    {
+        input_dir.z = -1.0;
+    }
+    if (glfwGetKey(glob_glfw_window, GLFW_KEY_A) == GLFW_PRESS)
+    {
+        input_dir.x = -1.0;
+    }
+    if (glfwGetKey(glob_glfw_window, GLFW_KEY_S) == GLFW_PRESS)
+    {
+        input_dir.z = 1.0;
+    }
+    if (glfwGetKey(glob_glfw_window, GLFW_KEY_D) == GLFW_PRESS)
+    {
+        input_dir.x = 1.0;
+    }
+    if (glfwGetKey(glob_glfw_window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS)
+    {
+        input_dir.y = -1.0;
+    }
+    if (glfwGetKey(glob_glfw_window, GLFW_KEY_SPACE) == GLFW_PRESS)
+    {
+        input_dir.y = 1.0;
+    }
+    if (glm::length(input_dir) > 0.0)
+    {
+        input_dir = glm::normalize(input_dir);
+    }
+    runtime.cloud.cameraOffset += glm::vec4(input_dir.x, input_dir.y, input_dir.z, 0.0);
+    runtime.cloud.sun_dir_and_time.w = glfwGetTime();
+}
+
+// draws a frame
+void vulkanMainLoop(RuntimeData& runtime)
+{
+    tick(runtime);
+    render(runtime);
+    runtime.current_frame = (runtime.current_frame+1) % MAX_FRAMES_IN_FLIGHT;
 }
 
 
@@ -1596,6 +1715,10 @@ void vulkanMainLoop(RuntimeData& runtime)
 void vulkanCleanup(RuntimeData& runtime)
 {
     vkDeviceWaitIdle(runtime.logical_device);
+    ImGui_ImplVulkan_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+    vkDestroyDescriptorPool(runtime.logical_device, runtime.imgui_pool, nullptr);
     if (validation_layers_enabled)
     {
         DestroyDebugUtilsMessengerEXT(runtime.instance, runtime.debug_messenger, nullptr);

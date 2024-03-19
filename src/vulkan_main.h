@@ -17,6 +17,7 @@
 
 #include <vector>
 #include <array>
+#include <optional>
 
 #include "defines.h"
 #include "tiny/tiny_arena.h"
@@ -78,16 +79,39 @@ struct SwapchainInfo
     BufferView<VkImage> swapchain_images = {};
     VkFormat image_format = {};
     VkExtent2D extent = {};
+    u32 image_count = 0;
+};
+
+struct QueueFamilyIndices 
+{
+    std::optional<u32> graphics_family = {};
+    std::optional<u32> present_family = {};
+    bool is_complete()
+    {
+        // check if all values have been filled
+        return graphics_family.has_value() && 
+            present_family.has_value();
+    }
+};
+
+struct CloudData
+{
+    glm::vec4 cameraOffset = glm::vec4(0, 0, 35.0, 0.0);
+    //     ( pointMagnitudeScalar, cloudDensityNoiseScalar, cloudDensityNoiseFreq, cloudDensityPointLengthFreq )
+    glm::vec4 cloudDensityParams = glm::vec4(0.05, 0.5, 0.5, 0.7);
+    glm::vec4 sun_dir_and_time = glm::vec4(1, 5, 1, 0);
 };
 
 struct RuntimeData
 {
+    CloudData cloud = {};
     VkInstance instance = {};
     VkDebugUtilsMessengerEXT debug_messenger = {};
     VkPhysicalDevice physical_device = {};
     VkDevice logical_device = {};
     VkQueue graphics_queue = {};
     VkQueue present_queue = {};
+    QueueFamilyIndices indices = {};
     VkSurfaceKHR surface = {};
     SwapchainInfo swapchain_info = {};
     BufferView<VkImageView> swapchain_image_views = {};
@@ -110,6 +134,7 @@ struct RuntimeData
     BufferView<VkBuffer> uniform_buffers = {};
     BufferView<VkDeviceMemory> uniform_buffers_mem = {};
     BufferView<void*> uniform_buffers_mapped = {};
+    VkDescriptorPool imgui_pool = {};
     Arena arena = {};
     Arena swapchain_arena = {};
     u32 current_frame = 0;
