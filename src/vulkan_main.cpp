@@ -471,12 +471,12 @@ VkPresentModeKHR choose_swap_present_mode(
     for (u32 i = 0; i < num_present_modes; i++)
     {
         VkPresentModeKHR present_mode = present_modes[i];
-        if (present_mode = VK_PRESENT_MODE_MAILBOX_KHR)
+        if (present_mode = VK_PRESENT_MODE_FIFO_KHR)
         {
             return present_mode;
         }
     }
-    return VK_PRESENT_MODE_FIFO_KHR;
+    return num_present_modes > 0 ? present_modes[0] : VK_PRESENT_MODE_IMMEDIATE_KHR;
 }
 
 // choose resolution of the swapchain images
@@ -1591,7 +1591,6 @@ void recreate_swapchain(RuntimeData& runtime)
 
 void render(RuntimeData& runtime)
 {
-    imgui_tick(runtime);
 
     u32& current_frame = runtime.current_frame;
     // wait until previous frame is finished drawing
@@ -1616,6 +1615,7 @@ void render(RuntimeData& runtime)
     // after waiting, if we know we are going to submit work (we might not if we need to recreate swapchain)
     // reset fence to unsignaled state
     vkResetFences(runtime.logical_device, 1, &runtime.inflight_fences.data[current_frame]);
+    imgui_tick(runtime);
 
     vkResetCommandBuffer(runtime.command_buffers.data[current_frame], 0);
     record_cmd_buffer(runtime.command_buffers.data[current_frame], 

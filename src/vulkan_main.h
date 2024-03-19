@@ -96,7 +96,7 @@ struct QueueFamilyIndices
 
 struct CloudData
 {
-    glm::vec4 cameraOffset = glm::vec4(0, 0, 35.0, 0.0);
+    glm::vec4 cameraOffset = glm::vec4(0, 15.0, 35.0, 0.0);
     //     ( pointMagnitudeScalar, cloudDensityNoiseScalar, cloudDensityNoiseFreq, cloudDensityPointLengthFreq )
     glm::vec4 cloudDensityParams = glm::vec4(0.05, 0.5, 0.5, 0.7);
     glm::vec4 sun_dir_and_time = glm::vec4(1, 5, 1, 0);

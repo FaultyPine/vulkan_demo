@@ -67,12 +67,7 @@ void main()
     uv.y = 1.0 - uv.y; // vulkan doesn't flip - opengl does. pretending to be opengl rn
     uv -= 0.5;
     uv.x *= resolution.x / resolution.y;
-
-    #ifdef CLOUD_PREMADE
-    vec4 cloud = cloud_main(fragUV, time);
-    #else 
     vec4 cloud = cloud_main(uv, time, resolution);
-    #endif
     outColor = cloud;
 }
 
@@ -81,13 +76,9 @@ void main()
 
 
 
-
-
-#ifndef CLOUD_PREMADE
-
-#define MAX_STEPS 100
+#define MAX_STEPS 30
 #define SURF_EPSILON 0.001
-#define MAX_DIST 200.0
+#define MAX_DIST 100.0
 
 mat2 rotate2D(float a) 
 {
@@ -228,6 +219,7 @@ float get_light_transmittance(vec3 rayOrigin, vec3 rayDirection, int cloudSample
 
 vec4 cloud_march(vec3 rayOrigin, vec3 rayDirection, float sceneDepth, vec3 lightDir)
 {
+    #define USE_LIGHT 1
     float time = gettime();
     float transmittance = 1.0;
     float absorption = 100.0;
@@ -255,9 +247,6 @@ vec4 cloud_march(vec3 rayOrigin, vec3 rayDirection, float sceneDepth, vec3 light
                 // ray has been absorbed by the cloud
                 break;
             }
-            // this step along the ray contributes to our final cloud color
-            float lightTransmittance = 
-                get_light_transmittance(point, lightDir, cloudSampleCount, 6, 20.0);
 
             float opacity = 50.0;
             float k = opacity * tmp * transmittance;
@@ -266,10 +255,13 @@ vec4 cloud_march(vec3 rayOrigin, vec3 rayDirection, float sceneDepth, vec3 light
             //vec4 cloudBase = vec4(cloudColor, densitySample);
             vec4 cloudColorIQ = vec4( mix( vec3(1.0,0.93,0.84), vec3(0.25,0.3,0.4), densitySample ), densitySample );
 
+            #if USE_LIGHT
+            // this step along the ray contributes to our final cloud color
+            float lightTransmittance = 
+                get_light_transmittance(point, lightDir, cloudSampleCount, 3, 15.0);
             float opacityLight = 80.0;
             float kl = opacityLight * tmp * transmittance * lightTransmittance;
             vec3 lightColor = vec3(1.0, 0.7, 0.4);
-            #if 1
             vec3 cloudLightColor = lightColor * kl;
             #else
             vec3 cloudLightColor = vec3(0);
@@ -293,10 +285,10 @@ float softShadows(vec3 ro, vec3 rd, float mint, float maxt, float k)
 {
     float resultingShadowColor = 1.0;
     float t = mint;
-    for (int i = 0; i < 50 && t < maxt; i++) 
+    for (int i = 0; i < MAX_STEPS && t < maxt; i++) 
     {
         float h = scene(ro + rd*t).w;
-        if(h < 0.001)
+        if(h < SURF_EPSILON)
         {
             return 0.0;
         }
@@ -345,28 +337,27 @@ mat3 camera(vec3 rayOrigin, vec3 target)
 
 vec4 cloud_main(vec2 uv, float time, vec2 resolution)
 {
+    vec4 color = vec4(vec3(0),1);
     // raymarching setup
     vec3 rayOrigin = normalize(ubo.cloud.cameraOffset.xyz) * 40.0;
     // rays in every direction on the screen along the negative z axis
     vec3 cameraTarget = vec3(0,1,0);
     mat3 cam = camera(rayOrigin, cameraTarget);
     vec3 rayDirection = normalize(cam * normalize(vec3(uv, -1.0)));
-
-    vec4 raymarchResult = raymarch(rayOrigin, rayDirection);
-    vec3 sceneColor = raymarchResult.rgb;
-    float distToSurf = raymarchResult.w;
-    float lightDist = 60;
-    vec3 pointOnSurface = rayOrigin + (rayDirection * distToSurf);
-    //vec3 lightDir = normalize(lightPos - pointOnSurface);
     vec3 lightDir = get_sun_dir();
-    vec4 color = vec4(vec3(0),1);
 
     vec3 bg1 = vec3(138.0/255, 231.0/255, 241.0/255);
     vec3 bg2 = vec3(84.0/255, 163.0/255, 245.0/255);
     //color.rgb = mix(bg1, bg2, uv.y);
 
+    vec4 raymarchResult = raymarch(rayOrigin, rayDirection);
+    vec3 sceneColor = raymarchResult.rgb;
+    float distToSurf = raymarchResult.w;
     if (distToSurf < MAX_DIST) // if we ended up hitting a surface
     {
+        float lightDist = 60;
+        vec3 pointOnSurface = rayOrigin + (rayDirection * distToSurf);
+
         vec3 ambient = vec3(0.01);
         float diffuseLightIntensity = 0.05;
         vec3 diffuseLightColor = vec3(1) * diffuseLightIntensity;
@@ -391,219 +382,3 @@ vec4 cloud_main(vec2 uv, float time, vec2 resolution)
     return color;
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-#else // CLOUD_PREMADE
-
-#define USE_LIGHT 0
-
-mat3 m = mat3( 0.00,  0.80,  0.60,
-              -0.80,  0.36, -0.48,
-              -0.60, -0.48,  0.64);
-
-/// Fractal Brownian motion.
-///
-/// Refer to:
-/// EN: https://thebookofshaders.com/13/
-/// JP: https://thebookofshaders.com/13/?lan=jp
-float fbm(vec3 p)
-{
-    float f;
-    f  = 0.5000 * noise(p); p = m * p * 2.02;
-    f += 0.2500 * noise(p); p = m * p * 2.03;
-    f += 0.1250 * noise(p);
-    return f;
-}
-
-//////////////////////////////////////////////////
-
-///
-/// Sphere distance function.
-///
-/// But this function return inverse value.
-/// Normal dist function is like below.
-/// 
-/// return length(pos) - 0.1;
-///
-/// Because this function is used for density.
-///
-
-// GRAYSON: returning the density at the given point. Positive values = more dense, <=0 means no density at that point / outside the volume
-float scene(in vec3 pos)
-{
-    return 0.1 - length(pos) * 0.05 + fbm(pos * 0.3);
-}
-
-
-vec3 getNormal(in vec3 p) 
-{
-    vec2 e = vec2(.01, 0);
-    vec3 n = scene(p) - vec3(
-        scene(p-e.xyy),
-        scene(p-e.yxy),
-        scene(p-e.yyx));
-    return normalize(n);
-}
-
-///
-/// Create a camera pose control matrix.
-///
-mat3 camera(vec3 ro, vec3 ta)
-{
-    vec3 cw = normalize(ta - ro);
-    vec3 cp = vec3(0.0, 1.0, 0.0);
-    vec3 cu = cross(cw, cp);
-    vec3 cv = cross(cu, cw);
-    return mat3(cu, cv, cw);
-}
-
-
-vec4 cloud_main(vec2 uv, float time)
-{
-    vec2 mo = vec2(time * 0.1, cos(time * 0.25));
-    
-    // Camera
-    float camDist = 40.0;
-    
-    // target
-    vec3 ta = vec3(0.0, 1.0, 0.0);
-    
-    // Ray origin
-    //vec3 ori = vec3(sin(time) * camDist, 0, cos(time) * camDist);
-    vec3 ro = camDist * normalize(vec3(cos(2.75 - 3.0 * mo.x), 0.7 - 1.0 * (mo.y - 1.0), sin(2.75 - 3.0 * mo.x)));
-    
-    float targetDepth = 1.3;
-    
-    // Camera pose.
-    mat3 c = camera(ro, ta);
-    vec3 dir = c * normalize(vec3(uv, targetDepth));
-    
-    // For raymarching const values.
-    const int sampleCount = 64;
-    const int sampleLightCount = 6;
-    const float eps = 0.01;
-    
-    // Raymarching step settings.
-    float zMax = 40.0;
-    float zstep = zMax / float(sampleCount);
-    
-    float zMaxl = 20.0;
-    float zstepl = zMaxl / float(sampleLightCount);
-    
-    // Easy access to the ray origin
-    vec3 p = ro;
-    
-    // Transmittance
-    float T = 1.0;
-    
-    // Substantially transparency parameter.
-    float absorption = 100.0;
-    
-    // Light Direction
-    vec3 sun_direction = ubo.sun_dir_and_time.xyz;
-    
-    // Result of culcration
-    vec4 color = vec4(0.0);
-    
-    for (int i = 0; i < sampleCount; i++)
-    {
-        // Using distance function for density.
-        // So the function not normal value.
-        // Please check it out on the function comment.
-        float density = scene(p);
-        
-        // The density over 0.0 then start cloud ray marching.
-        // Why? because the function will return negative value normally.
-        // But if ray is into the cloud, the function will return positive value.
-        if (density > 0.0)
-        {
-            // Let's start cloud ray marching!
-            
-            // TODO: don't get this part....
-            // This mean integral for each sampling points. ?????
-            float tmp = density / float(sampleCount);
-            
-            T *= 1.0 - (tmp * absorption); // ???/
-            
-            // Return if transmittance under 0.01. 
-            // Because the ray is almost absorbed.
-            if (T <= 0.01)
-            {
-                break;
-            }
-            
-            // Transmittance for Light
-            float Tl = 1.0;
-            { // lighting
-                #if USE_LIGHT == 1
-                // Light scattering
-                
-                
-                // Start light scattering with raymarching.
-                
-                // Raymarching position for the light.
-                vec3 lp = p;
-                
-                // as we step through the cloud volume to sample density points
-                // AT EACH STEP we also step towards the light source
-                // taking multiple samples of density along that ray as well
-                // we can get a seperate light-transmittence value associated with a specific density point
-                for (int j = 0; j < sampleLightCount; j++)
-                {
-                    float densityLight = scene(lp);
-                    
-                    // If densityLight is over 0.0, the ray is stil in the cloud.
-                    if (densityLight > 0.0)
-                    {
-                        float tmpl = densityLight / float(sampleCount);
-                        Tl *= 1.0 - (tmpl * absorption);
-                    }
-                    
-                    if (Tl <= 0.01)
-                    {
-                        break;
-                    }
-                    
-                    // Step to next position.
-                    lp += sun_direction * zstepl;
-                }
-                #endif
-            }
-            
-            // Add ambient + light scattering color
-            float opaity = 50.0;
-            float k = opaity * tmp * T;
-            vec4 cloudColor = vec4(1.0);
-            vec4 col1 = cloudColor * k;
-            
-            #if USE_LIGHT == 1
-            float opacityl = 30.0;
-            float kl = opacityl * tmp * T * Tl;
-            vec4 lightColor = vec4(1.0, 0.7, 0.9, 1.0);
-            vec4 col2 = lightColor * kl;
-            #else
-            vec4 col2 = vec4(0.0);
-            #endif
-            
-            color += col1 + col2;
-        }
-        
-        p += dir * zstep;
-    }
-    
-    vec3 bg = mix(vec3(0.3, 0.1, 0.8), vec3(0.7, 0.7, 1.0), 1.0 - (uv.y + 1.0) * 0.5);
-    color.rgb += bg;
-    
-	return color;
-}
-#endif // CLOUD_PREMADE
