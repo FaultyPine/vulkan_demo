@@ -1,6 +1,7 @@
-Vulkan renderer
+A toy vulkan renderer.  
+Currently uses Raymarching to draw some objects as well as Volumetric Clouds as seen in video below.
+[Real time rendering of volumetric clouds paper](https://www.diva-portal.org/smash/get/diva2:1223894/FULLTEXT01.pdf)
 
-Volumetric clouds
 
 Needs the Vulkan SDK libraries to run. 
 Wherever you installed the [Vulkan SDK](https://vulkan.lunarg.com/)
