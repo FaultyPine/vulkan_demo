@@ -1697,8 +1697,8 @@ void tick(RuntimeData& runtime)
     if (glm::length(input_dir) > 0.0)
     {
         input_dir = glm::normalize(input_dir);
+        runtime.cloud.cameraOffset += glm::vec4(input_dir.x, input_dir.y, input_dir.z, 0.0);
     }
-    runtime.cloud.cameraOffset += glm::vec4(input_dir.x, input_dir.y, input_dir.z, 0.0);
     runtime.cloud.sun_dir_and_time.w = glfwGetTime();
 }
 

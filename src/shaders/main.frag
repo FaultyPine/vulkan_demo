@@ -148,7 +148,7 @@ float fbm(vec3 p)
 }
 
 
-
+// NOTE: sdf's conventionally return negative inside an object and positive outside the object
 float sdfBox(vec3 p, vec3 b) 
 {
     vec3 q = abs(p) - b;
@@ -158,6 +158,30 @@ float sdfBox(vec3 p, vec3 b)
 float sdfSphere(vec3 p, float radius)
 {
     return length(p) - radius;
+}
+
+vec4 sdfMin(vec4 obj1, vec4 obj2)
+{
+    return obj1.w < obj2.w ? obj1 : obj2;
+}
+
+// NOTE: to self, to translate you must move in the *opposite* direction to the desired position
+// imagine yourself as a point in a raymarched scene with a sphere: if you take 2 steps to the right, the sphere will appear to you two steps further to the left
+// scaling is also odd.  
+vec4 scene(vec3 point)
+{
+    float fbm = fbm(point);
+    float time = gettime();
+    vec3 objColor = vec3(1.0, 0, 0);
+    float objSdf = sdfSphere(point + vec3(10,0,0)*sin(time), 1.0);
+    vec4 obj1 = vec4(objColor, objSdf);
+    float distanceSmoothedNoise = fbm * (1/length(point));
+    vec3 planeColor = vec3(246,215,176)/255.0;
+    planeColor = mix(planeColor, vec3(225,191,146)/255.0, fbm);
+    vec4 plane = vec4(planeColor, point.y + 1.0 + distanceSmoothedNoise);
+
+    vec4 distance = sdfMin(obj1, plane);
+    return distance;
 }
 
 float cloudDensitySample(vec3 point)
@@ -172,10 +196,37 @@ float cloudDensitySample(vec3 point)
     // need to invert some operations though since we aren't measuring distance to a surface
     // we are returning the *density* at some point which is positive in our shape, and <= 0 outside the shape
     point.y -= 10.0;
-    return SURF_EPSILON - length(point * cloudDensityPointLengthFreq) * pointMagnitudeScalar + fbm(point * cloudDensityNoiseFreq + timescroll) * cloudDensityNoiseScalar;
+    float sphere = SURF_EPSILON - length(point * cloudDensityPointLengthFreq) * pointMagnitudeScalar;
+    float noise = fbm(point * cloudDensityNoiseFreq + timescroll) * cloudDensityNoiseScalar;
+    return sphere + noise;
 }
 
-vec3 cloud_march(vec3 rayOrigin, vec3 rayDirection, float sceneDepth, vec3 lightDir, vec3 lightPos)
+float get_light_transmittance(vec3 rayOrigin, vec3 rayDirection, int cloudSampleCount, int lightSampleCount, float lightSampleMaxZ)
+{
+    float lightTransmittance = 1.0;
+    float absorption = 100.0;
+    float stepSize = lightSampleMaxZ / float(lightSampleCount);
+    // step from the point along a ray casted towards the light
+    vec3 lightPoint = rayOrigin;
+    for (int i = 0; i < lightSampleCount; i++)
+    {
+        float densityLight = cloudDensitySample(lightPoint);
+        // If densityLight is over 0.0, the ray is in an object.
+        if (densityLight > 0.0)
+        {
+            float tmpl = densityLight / float(cloudSampleCount);
+            lightTransmittance *= 1.0 - (tmpl * absorption);
+        }
+        if (lightTransmittance <= 0.01)
+        {
+            break;
+        }
+        lightPoint += rayDirection * stepSize;
+    }
+    return lightTransmittance;
+}
+
+vec4 cloud_march(vec3 rayOrigin, vec3 rayDirection, float sceneDepth, vec3 lightDir)
 {
     float time = gettime();
     float transmittance = 1.0;
@@ -186,7 +237,7 @@ vec3 cloud_march(vec3 rayOrigin, vec3 rayDirection, float sceneDepth, vec3 light
     // zStep is how far each of those steps is
     float zStep = MAX_DIST / float(cloudSampleCount);
 
-    vec3 color = vec3(0);
+    vec4 color = vec4(0,0,0,1);
     vec3 point = rayOrigin;
     for (int i = 0; i < cloudSampleCount; i++)
     {
@@ -195,6 +246,7 @@ vec3 cloud_march(vec3 rayOrigin, vec3 rayDirection, float sceneDepth, vec3 light
         {
             // we are in the volume & have some density here
             // TODO: RESEARCH THIS. IDK WHATS GOING ON HERE
+            // tmp is something like the integral for the sample point(s)
             float tmp = densitySample / float(cloudSampleCount); // ????
             transmittance *= 1.0 - (tmp * absorption); // ???
             // ----------------------------------------
@@ -203,34 +255,34 @@ vec3 cloud_march(vec3 rayOrigin, vec3 rayDirection, float sceneDepth, vec3 light
                 // ray has been absorbed by the cloud
                 break;
             }
+            // this step along the ray contributes to our final cloud color
+            float lightTransmittance = 
+                get_light_transmittance(point, lightDir, cloudSampleCount, 6, 20.0);
+
             float opacity = 50.0;
             float k = opacity * tmp * transmittance;
-            vec3 cloudColor = vec3(1.0);
-            vec3 col1 = cloudColor * k;
-            color += col1;
+            vec3 cloudColor = mix(vec3(1), vec3(0.5), densitySample);
+            vec3 cloudBase = cloudColor * k;
+            //vec4 cloudBase = vec4(cloudColor, densitySample);
+            vec4 cloudColorIQ = vec4( mix( vec3(1.0,0.93,0.84), vec3(0.25,0.3,0.4), densitySample ), densitySample );
+
+            float opacityLight = 80.0;
+            float kl = opacityLight * tmp * transmittance * lightTransmittance;
+            vec3 lightColor = vec3(1.0, 0.7, 0.4);
+            #if 1
+            vec3 cloudLightColor = lightColor * kl;
+            #else
+            vec3 cloudLightColor = vec3(0);
+            #endif
+
+            color.rgb += cloudBase.rgb + cloudLightColor;
         }
         point += rayDirection * zStep; // step forward through the ray
+        //zStep += length(point - rayOrigin); // as we get farther from the camera, step farther since details don't matter as much
         if (length(point) >= sceneDepth) break; // depth test
     }
 
     return color;
-}
-
-// NOTE: to self, to translate you must move in the *opposite* direction to the desired position
-// imagine yourself as a point in a raymarched scene with a sphere: if you take 2 steps to the right, the sphere will appear to you two steps further to the left
-// scaling is also odd.  
-float scene(vec3 point)
-{
-    float fbm = fbm(point);
-    float time = gettime();
-    float obj1 = sdfSphere(vec3(point) + vec3(10,0,0)*sin(time), 1.0);
-    float noise = fbm * (1/length(point));
-    float plane = point.y + 1.0 + noise;
-    float sun = sdfSphere(vec3(point) + get_sun_dir()*10, 1.0);
-
-    float distance = min(obj1, plane);
-    //distance = min(distance, sun);
-    return distance;
 }
 
 // courtesey of IQ
@@ -243,7 +295,7 @@ float softShadows(vec3 ro, vec3 rd, float mint, float maxt, float k)
     float t = mint;
     for (int i = 0; i < 50 && t < maxt; i++) 
     {
-        float h = scene(ro + rd*t);
+        float h = scene(ro + rd*t).w;
         if(h < 0.001)
         {
             return 0.0;
@@ -251,28 +303,28 @@ float softShadows(vec3 ro, vec3 rd, float mint, float maxt, float k)
         resultingShadowColor = min(resultingShadowColor, k*h/t );
         t += h;
     }
-    return resultingShadowColor ;
+    return resultingShadowColor;
 }
 
 vec3 getNormal(in vec3 p) 
 {
     vec2 e = vec2(.01, 0);
-    vec3 n = scene(p) - vec3(
-        scene(p-e.xyy),
-        scene(p-e.yxy),
-        scene(p-e.yyx));
+    vec3 n = scene(p).w - vec3(
+        scene(p-e.xyy).w,
+        scene(p-e.yxy).w,
+        scene(p-e.yyx).w);
     return normalize(n);
 }
 
-float raymarch(vec3 rayOrigin, vec3 rayDirection)
+vec4 raymarch(vec3 rayOrigin, vec3 rayDirection)
 {
-    float dO = 0.0;
+    vec4 dO = vec4(0.0);
     for (int i = 0; i < MAX_STEPS; i++)
     {
-        vec3 point = rayOrigin + (rayDirection * dO);
-        float distanceToSurface = scene(point);
+        vec3 point = rayOrigin + (rayDirection * dO.w);
+        vec4 distanceToSurface = scene(point);
         dO += distanceToSurface;
-        if (dO > MAX_DIST || distanceToSurface < SURF_EPSILON)
+        if (dO.w > MAX_DIST || distanceToSurface.w < SURF_EPSILON)
         { // if we've gone too far or have hit a surface
             break;
         }   
@@ -294,41 +346,49 @@ mat3 camera(vec3 rayOrigin, vec3 target)
 vec4 cloud_main(vec2 uv, float time, vec2 resolution)
 {
     // raymarching setup
-    vec3 rayOrigin = vec3(0, 0, 5.0); // camera
-    rayOrigin += ubo.cloud.cameraOffset.xyz;
+    vec3 rayOrigin = normalize(ubo.cloud.cameraOffset.xyz) * 40.0;
     // rays in every direction on the screen along the negative z axis
     vec3 cameraTarget = vec3(0,1,0);
     mat3 cam = camera(rayOrigin, cameraTarget);
     vec3 rayDirection = normalize(cam * normalize(vec3(uv, -1.0)));
-    // TODO: orbit camera around center
-    //vec3 rayDirection = normalize(-rayOrigin);
-    //rayDirection.xy += uv;
-    //rayDirection = normalize(rayDirection);
 
-    float distToSurf = raymarch(rayOrigin, rayDirection);
-    float lightDist = 30;
+    vec4 raymarchResult = raymarch(rayOrigin, rayDirection);
+    vec3 sceneColor = raymarchResult.rgb;
+    float distToSurf = raymarchResult.w;
+    float lightDist = 60;
     vec3 pointOnSurface = rayOrigin + (rayDirection * distToSurf);
     //vec3 lightDir = normalize(lightPos - pointOnSurface);
     vec3 lightDir = get_sun_dir();
-    vec3 lightPos = lightDist * -lightDir;
-    vec3 color = vec3(0.0);
+    vec4 color = vec4(vec3(0),1);
+
+    vec3 bg1 = vec3(138.0/255, 231.0/255, 241.0/255);
+    vec3 bg2 = vec3(84.0/255, 163.0/255, 245.0/255);
+    //color.rgb = mix(bg1, bg2, uv.y);
 
     if (distToSurf < MAX_DIST) // if we ended up hitting a surface
     {
+        vec3 ambient = vec3(0.01);
+        float diffuseLightIntensity = 0.05;
+        vec3 diffuseLightColor = vec3(1) * diffuseLightIntensity;
         vec3 normal = getNormal(pointOnSurface);
         float lightRadius = 70.0;
+        vec3 lightPos = lightDist * -lightDir;
         float attenuation = 1.0-remap(min(lightRadius, length(lightPos - pointOnSurface)), 0, lightRadius, 0, 1);
-        float diffuse = max(dot(normal, lightDir), 0.0) * attenuation;
-        vec3 ambient = vec3(0.01);
+        vec3 diffuse = max(dot(normal, lightDir), 0.0) * attenuation * diffuseLightColor;
         // cast a ray from the surface point toward the light direction. Intersection = in shadow, no intersection = in light
         float shadows = softShadows(pointOnSurface, lightDir, 0.1, 5.0, 64.0);
-        color = (diffuse + ambient) * shadows;
+        color.rgb = sceneColor * (diffuse + ambient) * max(0.3, shadows);
     }
 
-    vec3 cloud = cloud_march(rayOrigin, rayDirection, distToSurf, lightDir, lightPos);
+    vec4 cloud = cloud_march(rayOrigin, rayDirection, distToSurf, lightDir);
     color += cloud;
 
-    return vec4(color, 1.0);
+    // background sky
+    float sun = clamp(dot(lightDir,rayDirection), 0.0, 1.0);
+    //color.rgb -= 0.6*vec3(0.90,0.75,0.95)*rayDirection.y;
+	//color.rgb += 0.2*vec3(1.00,0.60,0.10)*pow( sun, 8.0 );
+
+    return color;
 }
 
 
@@ -470,8 +530,6 @@ vec4 cloud_main(vec2 uv, float time)
             // Let's start cloud ray marching!
             
             // TODO: don't get this part....
-
-            // why density sub by sampleCount?
             // This mean integral for each sampling points. ?????
             float tmp = density / float(sampleCount);
             
